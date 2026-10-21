@@ -1,0 +1,16 @@
+# Build output
+build/
+out/
+
+# IDE / tooling
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.VC.db
+CMakeUserPresets.json
+CMakeFiles/
+
+# Logs
+*.log
