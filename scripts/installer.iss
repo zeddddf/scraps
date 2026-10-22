@@ -24,7 +24,10 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequiredOverridesAllowed=dialog commandline
+; 剪贴板管理器按当前用户安装（{autopf} 解析到 %LOCALAPPDATA%\Programs），
+; 无需 UAC，静默安装不弹任何 UI（winget 校验要求无交互）。
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=commandline
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Tasks]
