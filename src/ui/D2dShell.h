@@ -15,6 +15,23 @@
 
 namespace clipd2d::ui {
 
+// ── 全局主题状态（C1 暗色模式）──────────────────────────────────────
+// 每个窗口各持一个 D2dShell（各自的渲染目标 + 刷子），主题是进程级属性，
+// 用全局纪元号驱动：SetDarkThemeActive 变更时递增纪元，各窗口每帧开头
+// SyncTheme() 比对纪元，不一致则重建刷子并刷新 DWM/文本框颜色。
+inline bool IsDarkThemeActive() {
+  extern bool g_dark_theme_active;
+  return g_dark_theme_active;
+}
+
+inline std::uint32_t ThemeEpoch() {
+  extern std::uint32_t g_theme_epoch;
+  return g_theme_epoch;
+}
+
+// 设置全局暗色态；变化时递增纪元（各窗口下一帧自动重建调色板资源）。
+void SetDarkThemeActive(bool dark);
+
 class D2dShell {
  public:
   D2dShell() = default;
@@ -66,6 +83,27 @@ class D2dShell {
   // 返回的指针由 shell 持有,调用方不得 Release、不得 SetColor(共享对象)。
   ID2D1SolidColorBrush* solid_brush(ID2D1RenderTarget* target, const D2D1_COLOR_F& color);
 
+  // C1 暗色模式：按当前主题在明/暗两组散落硬编码色间取值。
+  D2D1_COLOR_F themed_color(const D2D1_COLOR_F& light, const D2D1_COLOR_F& dark) const;
+
+  // ── C1 语义化取色：优先用这些而非 themed_color 手写配对，保证明暗两套
+  // 色板一致、层级正确（暗色按 iOS 规范：中性灰阶 + 官方系统色）。
+  D2D1_COLOR_F ColorBackground() const;       // 窗口底
+  D2D1_COLOR_F ColorSurface() const;          // 卡片/行/列表
+  D2D1_COLOR_F ColorSurfaceAlt() const;       // 输入框/次要控件
+  D2D1_COLOR_F ColorSurfaceHover() const;     // 悬停态
+  D2D1_COLOR_F ColorSurfaceSelected() const;  // 列表选中态
+  D2D1_COLOR_F ColorBorder() const;           // 描边/分隔线
+  D2D1_COLOR_F ColorAccent() const;           // 主色
+  D2D1_COLOR_F ColorAccentSoft() const;       // 主色弱化填充（选中底）
+  D2D1_COLOR_F ColorText() const;             // 主文本
+  D2D1_COLOR_F ColorMutedText() const;        // 次要文本
+  D2D1_COLOR_F ColorSubtleText() const;       // 弱文本/占位符
+
+  // 每帧开头调用：主题纪元变化时重建刷子。返回 true 表示本帧刷子已重建，
+  // 调用方应同步刷新文本框颜色 / DWM 属性等主题相关资源。
+  bool SyncTheme();
+
   // Q2:搜索清除按钮 × 字形的文本格式(原每帧创建),一次创建反复用。
   IDWriteTextFormat* search_clear_format() const { return search_clear_format_.Get(); }
 
@@ -99,6 +137,8 @@ class D2dShell {
   common::Status CreateSecondaryTextFormats();
   common::Status CreateBrushes();
   void ReleaseDeviceResources();
+
+  std::uint32_t brushes_theme_epoch_ = 0;  // 0 = 尚未按主题构建
 
   HWND hwnd_ = nullptr;
   UINT dpi_ = 96;

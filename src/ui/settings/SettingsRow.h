@@ -22,6 +22,8 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
+#include <cwctype>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -78,24 +80,26 @@ struct SettingRow {
 // ── 行构造工厂（面板声明处调用）────────────────────────────────────────
 
 inline SettingRow MakeInfoRow(
-    FlexNode* row, FlexNode* title, FlexNode* subtitle,
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle,
     const wchar_t* title_text, const wchar_t* subtitle_text,
     bool divider = true) {
   SettingRow r;
   r.control = SettingRow::Control::Info;
-  r.row = row; r.title = title; r.subtitle = subtitle;
+  r.row = row.get(); r.title = title.get(); r.subtitle = subtitle.get();
   r.title_text = title_text; r.subtitle_text = subtitle_text;
   r.divider = divider;
   return r;
 }
 
 inline SettingRow MakeToggleRow(
-    FlexNode* row, FlexNode* title, FlexNode* subtitle, FlexNode* control,
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle, const std::shared_ptr<FlexNode>& control,
     const wchar_t* title_text, const wchar_t* subtitle_text, bool value,
     Section section, int hit_option, bool divider = true) {
   SettingRow r;
   r.control = SettingRow::Control::Toggle;
-  r.row = row; r.title = title; r.subtitle = subtitle; r.control_node = control;
+  r.row = row.get(); r.title = title.get(); r.subtitle = subtitle.get(); r.control_node = control.get();
   r.title_text = title_text; r.subtitle_text = subtitle_text;
   r.hit_kind = HitKind::Toggle; r.section = section; r.hit_option = hit_option;
   r.divider = divider; r.toggle_value = value;
@@ -103,14 +107,15 @@ inline SettingRow MakeToggleRow(
 }
 
 inline SettingRow MakeFieldRow(
-    FlexNode* row, FlexNode* title, FlexNode* subtitle, FlexNode* control,
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle, const std::shared_ptr<FlexNode>& control,
     const wchar_t* title_text, const wchar_t* subtitle_text,
     std::wstring field_text, Section section, FieldId field_id,
     bool divider = true, const wchar_t* placeholder = L"",
     float radius = 10.0f, float inset_dip = 10.0f) {
   SettingRow r;
   r.control = SettingRow::Control::Field;
-  r.row = row; r.title = title; r.subtitle = subtitle; r.control_node = control;
+  r.row = row.get(); r.title = title.get(); r.subtitle = subtitle.get(); r.control_node = control.get();
   r.title_text = title_text; r.subtitle_text = subtitle_text;
   r.hit_kind = HitKind::Field; r.section = section; r.field_id = field_id;
   r.divider = divider; r.field_text = std::move(field_text);
@@ -119,8 +124,9 @@ inline SettingRow MakeFieldRow(
 }
 
 inline SettingRow MakeFieldToggleRow(
-    FlexNode* row, FlexNode* title, FlexNode* subtitle,
-    FlexNode* input_node, FlexNode* toggle_node,
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle,
+    const std::shared_ptr<FlexNode>& input_node, const std::shared_ptr<FlexNode>& toggle_node,
     const wchar_t* title_text, const wchar_t* subtitle_text,
     std::wstring field_text, bool toggle_value,
     Section section, FieldId field_id, int toggle_hit_option,
@@ -128,8 +134,8 @@ inline SettingRow MakeFieldToggleRow(
     float radius = 10.0f, float inset_dip = 10.0f) {
   SettingRow r;
   r.control = SettingRow::Control::FieldToggle;
-  r.row = row; r.title = title; r.subtitle = subtitle;
-  r.input_node = input_node; r.toggle_node = toggle_node;
+  r.row = row.get(); r.title = title.get(); r.subtitle = subtitle.get();
+  r.input_node = input_node.get(); r.toggle_node = toggle_node.get();
   r.title_text = title_text; r.subtitle_text = subtitle_text;
   r.hit_kind = HitKind::Field; r.section = section; r.field_id = field_id;
   r.hit_option = toggle_hit_option;
@@ -139,12 +145,13 @@ inline SettingRow MakeFieldToggleRow(
 }
 
 inline SettingRow MakeSelectRow(
-    FlexNode* row, FlexNode* title, FlexNode* subtitle, FlexNode* control,
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle, const std::shared_ptr<FlexNode>& control,
     const wchar_t* title_text, const wchar_t* subtitle_text,
     Section section, SelectField select_field, bool divider = true) {
   SettingRow r;
   r.control = SettingRow::Control::Select;
-  r.row = row; r.title = title; r.subtitle = subtitle; r.control_node = control;
+  r.row = row.get(); r.title = title.get(); r.subtitle = subtitle.get(); r.control_node = control.get();
   r.title_text = title_text; r.subtitle_text = subtitle_text;
   r.hit_kind = HitKind::SelectTrigger; r.section = section;
   r.select_field = select_field;
@@ -153,13 +160,14 @@ inline SettingRow MakeSelectRow(
 }
 
 inline SettingRow MakeSliderRow(
-    FlexNode* row, FlexNode* title, FlexNode* subtitle, FlexNode* control,
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle, const std::shared_ptr<FlexNode>& control,
     const wchar_t* title_text, const wchar_t* subtitle_text,
     int min_value, int max_value, int value,
     Section section, FieldId field_id, int hit_option, bool divider = true) {
   SettingRow r;
   r.control = SettingRow::Control::Slider;
-  r.row = row; r.title = title; r.subtitle = subtitle; r.control_node = control;
+  r.row = row.get(); r.title = title.get(); r.subtitle = subtitle.get(); r.control_node = control.get();
   r.title_text = title_text; r.subtitle_text = subtitle_text;
   r.hit_kind = HitKind::SliderDrag; r.section = section;
   r.field_id = field_id; r.hit_option = hit_option;
@@ -169,16 +177,32 @@ inline SettingRow MakeSliderRow(
 }
 
 inline SettingRow MakeActionRow(
-    FlexNode* row, FlexNode* title, FlexNode* subtitle, FlexNode* control,
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle, const std::shared_ptr<FlexNode>& control,
     const wchar_t* title_text, const wchar_t* subtitle_text,
     const wchar_t* action_label, HitKind action_kind, bool danger,
     bool divider = true) {
   SettingRow r;
   r.control = SettingRow::Control::Action;
-  r.row = row; r.title = title; r.subtitle = subtitle; r.control_node = control;
+  r.row = row.get(); r.title = title.get(); r.subtitle = subtitle.get(); r.control_node = control.get();
   r.title_text = title_text; r.subtitle_text = subtitle_text;
   r.hit_kind = action_kind;
   r.divider = divider; r.action_label = action_label; r.action_danger = danger;
+  return r;
+}
+
+// 「恢复本节默认」统一行：点击后仅重置草稿，仍需点保存生效。
+inline SettingRow MakeResetRow(
+    const std::shared_ptr<FlexNode>& row, const std::shared_ptr<FlexNode>& title,
+    const std::shared_ptr<FlexNode>& subtitle, const std::shared_ptr<FlexNode>& control,
+    Section section) {
+  SettingRow r = MakeActionRow(row, title, subtitle, control,
+                               L"\u6062\u590d\u672c\u8282\u9ed8\u8ba4",
+                               L"\u5c06\u672c\u8282\u8bbe\u7f6e\u6062\u590d\u4e3a\u7a0b\u5e8f\u9ed8\u8ba4\u503c\uff0c\u4fdd\u5b58\u540e\u751f\u6548",
+                               L"\u91cd\u7f6e", HitKind::ActionResetSection, false);
+  r.section = section;
+  r.hit_option = static_cast<int>(section);
+  r.divider = false;  // 恢复行固定是各卡片最后一行，不出分隔线
   return r;
 }
 
@@ -186,15 +210,18 @@ inline SettingRow MakeActionRow(
 
 inline void DrawSettingSectionTitle(
     ID2D1HwndRenderTarget* target, ISettingsHost* host,
-    float cx, float cy, FlexNode* node, const wchar_t* text) {
+    float cx, float cy, const std::shared_ptr<FlexNode>& node, const wchar_t* text) {
+  (void)target;
+  (void)cx;
+  (void)cy;
   if (node == nullptr) return;
-  DrawTextLine(target, host->GetShell().section_format(), host->GetShell().text_brush(),
-               node->GetAbsoluteRect(cx, cy), text);
+  // B3 粘性节标题：延迟到宿主统一绘制（见 QueueStickyTitle 注释）。
+  host->QueueStickyTitle(node.get(), text);
 }
 
 inline void DrawSettingPanelBox(
     ID2D1HwndRenderTarget* target, ISettingsHost* host,
-    float cx, float cy, FlexNode* node) {
+    float cx, float cy, const std::shared_ptr<FlexNode>& node) {
   if (node == nullptr) return;
   FillRoundedPanel(target, node->GetAbsoluteRect(cx, cy), 16.0f,
                    host->GetShell().surface_brush(), host->GetShell().border_brush(), 0.5f);
@@ -297,7 +324,7 @@ inline void DrawSettingRow(
       DrawTextLine(target, shell.small_format(),
                    r.action_danger ? shell.danger_brush() : shell.text_brush(),
                    rect, r.action_label, DWRITE_TEXT_ALIGNMENT_CENTER);
-      host->AddHitRegion({rect, r.hit_kind});
+      host->AddHitRegion({rect, r.hit_kind, r.section, r.field_id, r.hit_option});
       break;
     }
   }
@@ -312,6 +339,66 @@ inline void DrawSettingRows(
     float cx, float cy, const std::vector<SettingRow>& rows) {
   for (const auto& r : rows) {
     DrawSettingRow(target, host, cx, cy, r);
+  }
+}
+
+// ── 设置搜索：行匹配 / 过滤 / 空态 ──────────────────────────────────────
+// 行标题与副题文本是搜索的唯一索引来源，避免和章节关键词表维护两份。
+
+namespace settings_row_detail {
+
+inline std::wstring ToLowerCopy(std::wstring_view text) {
+  std::wstring out(text);
+  for (auto& c : out) {
+    c = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c)));
+  }
+  return out;
+}
+
+inline std::wstring TrimCopy(std::wstring_view text) {
+  size_t begin = 0;
+  size_t end = text.size();
+  while (begin < end && std::iswspace(static_cast<wint_t>(text[begin])) != 0) {
+    ++begin;
+  }
+  while (end > begin && std::iswspace(static_cast<wint_t>(text[end - 1])) != 0) {
+    --end;
+  }
+  return std::wstring(text.substr(begin, end - begin));
+}
+
+inline bool ContainsInsensitive(std::wstring_view haystack, std::wstring_view needle) {
+  if (needle.empty()) {
+    return true;
+  }
+  return ToLowerCopy(haystack).find(ToLowerCopy(needle)) != std::wstring::npos;
+}
+
+}  // namespace settings_row_detail
+
+inline bool SettingRowMatches(const SettingRow& r, std::wstring_view query) {
+  if (query.empty()) {
+    return true;
+  }
+  if (r.title_text != nullptr && settings_row_detail::ContainsInsensitive(r.title_text, query)) {
+    return true;
+  }
+  if (r.subtitle_text != nullptr && settings_row_detail::ContainsInsensitive(r.subtitle_text, query)) {
+    return true;
+  }
+  return false;
+}
+
+// 面板 Render 的布局前置：需要时重算 Yoga 布局。
+// 搜索定位不再折叠行——面板始终完整渲染，跳转由宿主滚动到目标行完成。
+inline void PrepareSettingRows(
+    FlexNode* root, float width, float height, float* max_scroll_y,
+    bool force_relayout) {
+  if (root != nullptr && force_relayout) {
+    root->CalculateLayout(width, YGUndefined);
+    if (max_scroll_y != nullptr) {
+      *max_scroll_y = std::max(0.0f, root->GetHeight() - height);
+    }
   }
 }
 

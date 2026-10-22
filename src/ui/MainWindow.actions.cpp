@@ -303,7 +303,7 @@ bool EnsurePopupMenuWindowClass(HINSTANCE instance) {
                 static_cast<FLOAT>(client.top),
                 static_cast<FLOAT>(client.right),
                 static_cast<FLOAT>(client.bottom));
-            target->Clear(D2D1::ColorF(0xFFFFFF));
+            target->Clear(state->d2d_shell.ColorSurface());
             target->FillRectangle(client_rect, state->d2d_shell.surface_brush());
             const D2D1_RECT_F border_rect = D2D1::RectF(
                 client_rect.left + 0.5f,

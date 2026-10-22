@@ -8,8 +8,17 @@
 // records thumb-follow error and bottom coverage.
 //
 // Output: outputs/scroll_bench_<tag>.md (tag from --bench-scroll=<tag>).
+//
+// Build gating: the harness is compiled only when
+// SCRAPS_ENABLE_SCROLL_BENCH is defined or NDEBUG is not defined
+// (Debug / bench-enabled builds). Default Release builds get no-op stubs so
+// the benchmark code is not linked into shipped binaries; the command-line
+// flag stays functional wherever the harness is compiled in.
 
 #include "ui/MainWindowInternal.h"
+
+#if defined(SCRAPS_ENABLE_SCROLL_BENCH) || !defined(NDEBUG)
+
 #include "ui/vlist/RowHeightModel.h"
 
 #include <algorithm>
@@ -340,7 +349,6 @@ void MainWindow::RunScrollBenchmark() {
   int bottom_achieved = 0;
   {
     const int thumb_x = (layout.scrollbar_track.left + layout.scrollbar_track.right) / 2;
-    const int max_scroll = std::max(1, scroll_controller_->MaxScrollOffset());
     const float list_h = static_cast<float>(viewport_h);
     const float content_h = static_cast<float>(std::max(1, viewport_.TotalHeight()));
     const float track_f = static_cast<float>(track_h);
@@ -495,3 +503,14 @@ void MainWindow::RunScrollBenchmark() {
 }
 
 }  // namespace clipd2d::ui
+
+#else  // SCRAPS_ENABLE_SCROLL_BENCH not defined and NDEBUG defined
+
+namespace clipd2d::ui {
+
+void MainWindow::MaybeArmScrollBench() {}
+void MainWindow::RunScrollBenchmark() {}
+
+}  // namespace clipd2d::ui
+
+#endif  // SCRAPS_ENABLE_SCROLL_BENCH || !NDEBUG

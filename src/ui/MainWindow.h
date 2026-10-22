@@ -39,8 +39,6 @@
 #include "ui/UiStrings.h"
 #include "ui/vlist/VirtualListLayout.h"
 #include "ui/vlist/VirtualListViewport.h"
-#include "ui/vlist/VirtualListLayout.h"
-#include "ui/vlist/VirtualListViewport.h"
 
 namespace clipd2d::ui {
 
@@ -87,6 +85,9 @@ public:
   void RequestRefreshForNewestClip(std::int64_t clip_id) const;
   void NotifySettingsWindowShown();
   void NotifySettingsWindowHidden();
+  // C3 外观即时预览：设置窗未保存的毛玻璃改动实时套用/还原。
+  void SetBlurPreview(core::store::WindowBlurType type, int opacity);
+  void ClearBlurPreview();
   void NotifyPreviewWindowShown();
   void NotifyPreviewWindowHidden();
   void CaptureExternalFocusRestoreContext();
@@ -98,6 +99,11 @@ public:
  private:
   friend class HistoryDataController;
   friend class HistoryAssetLoader;
+
+  // C3 外观即时预览态（设置窗打开期间未保存的毛玻璃值）。
+  bool blur_preview_active_ = false;
+  core::store::WindowBlurType preview_blur_type_ = core::store::WindowBlurType::Mica;
+  int preview_blur_opacity_ = 50;
 
   enum class HitKind {
     None,
@@ -296,6 +302,7 @@ public:
 
   LRESULT WindowProc(UINT message, WPARAM w_param, LPARAM l_param);
   common::Status CreateControls();
+  void ApplyThemeToTextboxes();
   void LayoutControls();
   void UpdateRoundedRegion();
   common::Status EnsureHoverHintWindowCreated();
@@ -307,6 +314,7 @@ public:
   void ToggleWindow();
   void FocusSearchBox(bool select_all);
   void ClearSearch();
+  void HandleSystemThemeChange();
   void SetPanelAllowsActivation(bool allow_activation);
   std::optional<core::clipboard::PasteTargetContext> BuildExternalFocusRestoreContext() const;
   bool RestoreExternalFocusContext(const core::clipboard::PasteTargetContext& context);
@@ -421,6 +429,10 @@ public:
       POINT hover,
       const core::store::AppSettings& render_settings,
       bool collect_hits);
+  void RenderEmptyListGuidance(
+      ID2D1RenderTarget* target,
+      const RECT& list_rect,
+      const core::store::AppSettings& render_settings);
   void RenderLiveResizeListSurface(
       ID2D1RenderTarget* target,
       const RECT& client,

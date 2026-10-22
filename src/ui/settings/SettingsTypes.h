@@ -51,6 +51,7 @@ enum class SelectField {
   WindowPositionMode,
   ClickPasteMode,
   WindowBlurType,
+  Theme,
 };
 
 enum class HitKind {
@@ -66,6 +67,13 @@ enum class HitKind {
   ActionOpenDataDir,
   Save,
   Cancel,
+  // 跨节搜索结果条目（option = search_hits_ 下标）
+  SearchResult,
+  // 恢复本节默认（option = (int)Section）
+  ActionResetSection,
+  // 未保存修改确认浮层
+  ConfirmDiscard,
+  ConfirmKeep,
 };
 
 struct DraftState {
@@ -81,6 +89,7 @@ struct DraftState {
   core::store::WindowPositionMode window_position_mode = core::store::WindowPositionMode::Remember;
   core::store::WindowBlurType window_blur_type = core::store::WindowBlurType::Mica;
   int window_blur_opacity = 50;
+  core::store::ThemeMode theme = core::store::ThemeMode::System;
   std::wstring hotkey;
   std::wstring quick_paste_hotkey;
   bool focus_search_on_open = false;

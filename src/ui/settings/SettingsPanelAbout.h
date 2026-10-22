@@ -11,6 +11,7 @@ class SettingsPanelAbout : public ISettingsPanel {
 public:
     void Layout(float /*width*/, float& /*current_y*/, const DraftState& /*draft*/, ISettingsHost* /*host*/) override {}
     float Render(ID2D1HwndRenderTarget* target, const DraftState& draft, ISettingsHost* host, const RECT& content_rect) override;
+    std::vector<SettingRow> BuildRows(const DraftState& draft, ISettingsHost* host) const override;
 
 private:
     void BuildLayout(float width, float height, ISettingsHost* host);
@@ -28,6 +29,10 @@ private:
     std::shared_ptr<FlexNode> row1_subtitle_;
     std::shared_ptr<FlexNode> row2_;
     std::shared_ptr<FlexNode> row2_toggle_;
+    std::shared_ptr<FlexNode> row3_;
+    std::shared_ptr<FlexNode> row3_t_;
+    std::shared_ptr<FlexNode> row3_s_;
+    std::shared_ptr<FlexNode> row3_c_;
 };
 
 }  // namespace clipd2d::ui

@@ -44,6 +44,7 @@ class Application {
   void StopStartupMaintenance();
   void OpenSettingsWindow();
   bool ApplySettings(const core::store::AppSettings& settings);
+  void ApplyThemeMode(core::store::ThemeMode mode);
   void ShowTrayMenu();
   void ClearHistory();
   void ClearImageCache();

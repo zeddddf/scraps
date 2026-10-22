@@ -13,6 +13,7 @@
 #include "app/StartupTrace.h"
 #include "app/AppStrings.h"
 #include "platform/win32/HotkeySpec.h"
+#include "ui/PanelWindowChrome.h"
 
 namespace clipd2d::app {
 
@@ -138,6 +139,8 @@ common::Status Application::Initialize(HINSTANCE instance, int n_cmd_show) {
   }
   MarkStartupPhase("controller_ready");
   core::store::AppSettings startup_settings = app_controller_.current_settings();
+  // C1 暗色模式：窗口创建前先按持久化主题模式设置全局明暗态。
+  ApplyThemeMode(startup_settings.theme);
   core::store::BootstrapState bootstrap_state;
   status = app_controller_.LoadBootstrapState(&bootstrap_state);
   if (!status.ok()) {
@@ -471,6 +474,11 @@ void Application::OpenSettingsWindow() {
   };
   actions.on_hide = [this]() {
     main_window_.NotifySettingsWindowHidden();
+    // C3：设置窗关闭/取消时清掉未保存的毛玻璃预览，回退到已保存值。
+    main_window_.ClearBlurPreview();
+  };
+  actions.on_preview_appearance = [this](const core::store::AppSettings& settings) {
+    main_window_.SetBlurPreview(settings.window_blur_type, settings.window_blur_opacity);
   };
   settings_window_.Show(app_controller_.current_settings(), std::move(actions));
 }
@@ -633,9 +641,25 @@ bool Application::ApplySettings(const core::store::AppSettings& settings) {
     screenshot_host_manager_.Initialize(app_paths_.root_dir, normalized_settings.screenshot_enabled && normalized_settings.screenshot_prewarm);
   }
 
+  // C1 暗色模式：主题变化时全局切换（各窗口下一帧经 SyncTheme 自动重建）。
+  ApplyThemeMode(normalized_settings.theme);
+
   notify_icon_host_.UpdateMonitoringState(normalized_settings.monitoring_enabled);
   main_window_.RequestRefreshPreserveViewport();
   return true;
+}
+
+void Application::ApplyThemeMode(core::store::ThemeMode mode) {
+  const bool dark = mode == core::store::ThemeMode::Dark ||
+      (mode == core::store::ThemeMode::System && clipd2d::ui::IsSystemDarkTheme());
+  clipd2d::ui::SetDarkThemeActive(dark);
+  // 主窗此刻若可见，主动触发重绘（其余窗口显示/渲染时经纪元比对自动跟进）。
+  if (main_window_.hwnd() != nullptr) {
+    InvalidateRect(main_window_.hwnd(), nullptr, FALSE);
+  }
+  if (settings_window_.hwnd() != nullptr) {
+    InvalidateRect(settings_window_.hwnd(), nullptr, FALSE);
+  }
 }
 
 void Application::ShowTrayMenu() {

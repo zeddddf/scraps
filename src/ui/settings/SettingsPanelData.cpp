@@ -1,5 +1,6 @@
 #include "ui/settings/SettingsPanelData.h"
 #include "ui/settings/ISettingsHost.h"
+#include "ui/settings/SettingsRow.h"
 #include "ui/settings/SettingsTypes.h"
 #include "ui/settings/SettingsDrawUtil.h"
 #include "ui/layout/FlexNode.h"
@@ -62,6 +63,15 @@ void SettingsPanelData::BuildLayout(float width, float height, ISettingsHost* ho
     card2_->AddChild(r6_);
     r6_t_ = std::make_shared<FlexNode>(); r6_->AddChild(r6_t_);
     r6_c_ = std::make_shared<FlexNode>(); r6_->AddChild(r6_c_);
+
+    r7_ = std::make_shared<FlexNode>();
+    card2_->AddChild(r7_);
+    auto r7_txt = std::make_shared<FlexNode>();
+    r7_txt->FlexDirection(YGFlexDirectionColumn).JustifyContent(YGJustifyCenter);
+    r7_->AddChild(r7_txt);
+    r7_t_ = std::make_shared<FlexNode>(); r7_txt->AddChild(r7_t_);
+    r7_s_ = std::make_shared<FlexNode>(); r7_txt->AddChild(r7_s_);
+    r7_c_ = std::make_shared<FlexNode>(); r7_->AddChild(r7_c_);
   }
 
   root_->Width(width).FlexDirection(YGFlexDirectionColumn);
@@ -101,9 +111,46 @@ void SettingsPanelData::BuildLayout(float width, float height, ISettingsHost* ho
   r6_->Height(static_cast<float>(host->DipToPx(60.0f))).Padding(YGEdgeHorizontal, padding).FlexDirection(YGFlexDirectionRow).AlignItems(YGAlignCenter).JustifyContent(YGJustifySpaceBetween);
   r6_t_->Height(static_cast<float>(host->DipToPx(18.0f)));
   r6_c_->Width(static_cast<float>(host->DipToPx(240.0f))).Height(static_cast<float>(host->DipToPx(28.0f)));
+  r7_->Height(static_cast<float>(host->DipToPx(60.0f))).Padding(YGEdgeHorizontal, padding).FlexDirection(YGFlexDirectionRow).AlignItems(YGAlignCenter).JustifyContent(YGJustifySpaceBetween);
+  r7_t_->Height(static_cast<float>(host->DipToPx(18.0f))).Margin(YGEdgeBottom, static_cast<float>(host->DipToPx(2.0f)));
+  r7_s_->Height(static_cast<float>(host->DipToPx(14.0f)));
+  r7_c_->Width(static_cast<float>(host->DipToPx(88.0f))).Height(static_cast<float>(host->DipToPx(28.0f)));
 
   root_->CalculateLayout(width, YGUndefined);
   max_scroll_y_ = std::max(0.0f, root_->GetHeight() - height);
+}
+
+std::vector<SettingRow> SettingsPanelData::BuildRows(const DraftState& draft, ISettingsHost* host) const {
+  // 统计行（r1-r3）为 title/副题同行布局，走 Line 模式（单行裁剪不换行）；
+  // Action 命中仅 {rect, kind}，section/field/option 取 HitRegion 默认值。
+  const DataStats& stats = host->GetDataStats();
+  db_size_text_ = FormatBytes(stats.database_bytes);
+  cache_size_text_ = FormatBytes(stats.image_cache_bytes);
+
+  SettingRow stat1 = MakeActionRow(r1_, r1_t_, r1_s_, r1_c_, L"\u6570\u636e\u5e93\u5927\u5c0f", db_size_text_.c_str(),
+                                   L"\u6e05\u7a7a\u5386\u53f2", HitKind::ActionClearHistory, true);
+  stat1.text_mode = SettingRow::TextMode::Line;
+  SettingRow stat2 = MakeActionRow(r2_, r2_t_, r2_s_, r2_c_, L"\u56fe\u7247\u7f13\u5b58", cache_size_text_.c_str(),
+                                   L"\u6e05\u7406\u7f13\u5b58", HitKind::ActionClearImageCache, true);
+  stat2.text_mode = SettingRow::TextMode::Line;
+  SettingRow stat3 = MakeActionRow(r3_, r3_t_, r3_s_, r3_c_, L"\u6570\u636e\u76ee\u5f55", stats.data_dir.c_str(),
+                                   L"\u6253\u5f00\u6587\u4ef6\u5939", HitKind::ActionOpenDataDir, false, false);
+  stat3.text_mode = SettingRow::TextMode::Line;
+
+  std::vector<SettingRow> rows = {stat1, stat2, stat3};
+  std::vector<SettingRow> bottom = {
+      MakeFieldRow(r4_, r4_t_, nullptr, r4_c_, L"\u5916\u90e8\u7f16\u8f91\u5668\u8def\u5f84", L"",
+                   draft.external_editor_path, Section::Data, FieldId::ExternalEditorPath, true,
+                   L"\u672a\u8bbe\u7f6e", 6.0f, 10.0f),
+      MakeToggleRow(r5_, r5_t_, nullptr, r5_c_, L"\u542f\u7528 OCR", L"",
+                    draft.image_ocr_enabled, Section::Data, 9),
+      MakeFieldRow(r6_, r6_t_, nullptr, r6_c_, L"OCR \u7a0b\u5e8f\u8def\u5f84", L"",
+                   draft.ocr_executable_path, Section::Data, FieldId::OcrExecutablePath, false,
+                   L"\u9ed8\u8ba4\u5185\u7f6e", 6.0f, 10.0f),
+      MakeResetRow(r7_, r7_t_, r7_s_, r7_c_, Section::Data),
+  };
+  rows.insert(rows.end(), bottom.begin(), bottom.end());
+  return rows;
 }
 
 float SettingsPanelData::Render(ID2D1HwndRenderTarget* target, const DraftState& draft, ISettingsHost* host, const RECT& content_rect) {
@@ -111,68 +158,38 @@ float SettingsPanelData::Render(ID2D1HwndRenderTarget* target, const DraftState&
   float height = static_cast<float>(content_rect.bottom - content_rect.top);
   int scale_key = host->DipToPx(100);
 
+  bool relayout = false;
   if (width != last_width_ || height != last_height_ || scale_key != last_scale_key_ || !root_) {
     BuildLayout(width, height, host);
     last_width_ = width;
     last_height_ = height;
     last_scale_key_ = scale_key;
+    relayout = true;
+  }
+
+  const std::vector<SettingRow> rows = BuildRows(draft, host);
+  SetDrawnRows(rows);
+  PrepareSettingRows(root_.get(), width, height, &max_scroll_y_, relayout);
+
+  // 行按节点归属分回两节绘制：card1_（统计）与 card2_（编辑器/OCR）。
+  std::vector<SettingRow> vis_stats;
+  std::vector<SettingRow> vis_tools;
+  for (const auto& r : rows) {
+    if (r.row == r1_.get() || r.row == r2_.get() || r.row == r3_.get()) {
+      vis_stats.push_back(r);
+    } else {
+      vis_tools.push_back(r);
+    }
   }
 
   float cx = static_cast<float>(content_rect.left);
   float cy = static_cast<float>(content_rect.top) - host->GetScrollY();
 
-  DrawTextLine(target, host->GetShell().section_format(), host->GetShell().text_brush(), title_node_->GetAbsoluteRect(cx, cy), L"\u6570\u636e\u4e0e\u5de5\u5177");
-  FillRoundedPanel(target, card1_->GetAbsoluteRect(cx, cy), 16.0f, host->GetShell().surface_brush(), host->GetShell().border_brush(), 0.5f);
-
-  DrawTextLine(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r1_t_->GetAbsoluteRect(cx, cy), L"\u6570\u636e\u5e93\u5927\u5c0f");
-  DrawTextLine(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), r1_s_->GetAbsoluteRect(cx, cy), FormatBytes(host->GetDataStats().database_bytes));
-  RECT clear_history_rect = r1_c_->GetAbsoluteRect(cx, cy);
-  FillRoundedPanel(target, clear_history_rect, 6.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  DrawTextLine(target, host->GetShell().small_format(), host->GetShell().danger_brush(), clear_history_rect, L"\u6e05\u7a7a\u5386\u53f2", DWRITE_TEXT_ALIGNMENT_CENTER);
-  host->AddHitRegion({clear_history_rect, HitKind::ActionClearHistory});
-  DrawRowDivider(target, host->GetShell(), r1_->GetAbsoluteRect(cx, cy));
-
-  DrawTextLine(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r2_t_->GetAbsoluteRect(cx, cy), L"\u56fe\u7247\u7f13\u5b58");
-  DrawTextLine(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), r2_s_->GetAbsoluteRect(cx, cy), FormatBytes(host->GetDataStats().image_cache_bytes));
-  RECT clear_image_cache_rect = r2_c_->GetAbsoluteRect(cx, cy);
-  FillRoundedPanel(target, clear_image_cache_rect, 6.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  DrawTextLine(target, host->GetShell().small_format(), host->GetShell().danger_brush(), clear_image_cache_rect, L"\u6e05\u7406\u7f13\u5b58", DWRITE_TEXT_ALIGNMENT_CENTER);
-  host->AddHitRegion({clear_image_cache_rect, HitKind::ActionClearImageCache});
-  DrawRowDivider(target, host->GetShell(), r2_->GetAbsoluteRect(cx, cy));
-
-  DrawTextLine(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r3_t_->GetAbsoluteRect(cx, cy), L"\u6570\u636e\u76ee\u5f55");
-  DrawTextLine(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), r3_s_->GetAbsoluteRect(cx, cy), host->GetDataStats().data_dir);
-  RECT open_data_dir_rect = r3_c_->GetAbsoluteRect(cx, cy);
-  FillRoundedPanel(target, open_data_dir_rect, 6.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  DrawTextLine(target, host->GetShell().small_format(), host->GetShell().text_brush(), open_data_dir_rect, L"\u6253\u5f00\u6587\u4ef6\u5939", DWRITE_TEXT_ALIGNMENT_CENTER);
-  host->AddHitRegion({open_data_dir_rect, HitKind::ActionOpenDataDir});
-
-  FillRoundedPanel(target, card2_->GetAbsoluteRect(cx, cy), 16.0f, host->GetShell().surface_brush(), host->GetShell().border_brush(), 0.5f);
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r4_t_->GetAbsoluteRect(cx, cy), L"\u5916\u90e8\u7f16\u8f91\u5668\u8def\u5f84");
-  RECT external_editor_path_rect = r4_c_->GetAbsoluteRect(cx, cy);
-  host->RegisterFieldRect(FieldId::ExternalEditorPath, external_editor_path_rect);
-  FillRoundedPanel(target, external_editor_path_rect, 6.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  host->AddHitRegion({external_editor_path_rect, HitKind::Field, Section::Data, FieldId::ExternalEditorPath, static_cast<int>(FieldId::ExternalEditorPath)});
-  if (host->GetActiveField() != FieldId::ExternalEditorPath) {
-    DrawTextLine(target, host->GetShell().small_format(), draft.external_editor_path.empty() ? host->GetShell().muted_text_brush() : host->GetShell().text_brush(), InsetRectCopy(external_editor_path_rect, host->DipToPx(10.0f), 0), draft.external_editor_path.empty() ? L"\u672a\u8bbe\u7f6e" : draft.external_editor_path);
-  }
-  DrawRowDivider(target, host->GetShell(), r4_->GetAbsoluteRect(cx, cy));
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r5_t_->GetAbsoluteRect(cx, cy), L"\u542f\u7528 OCR");
-  RECT image_ocr_toggle_rect = r5_c_->GetAbsoluteRect(cx, cy);
-  DrawToggle(target, image_ocr_toggle_rect, draft.image_ocr_enabled, host->GetShell());
-  host->AddHitRegion({image_ocr_toggle_rect, HitKind::Toggle, Section::Data, FieldId::None, 9});
-  DrawRowDivider(target, host->GetShell(), r5_->GetAbsoluteRect(cx, cy));
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r6_t_->GetAbsoluteRect(cx, cy), L"OCR \u7a0b\u5e8f\u8def\u5f84");
-  RECT ocr_executable_path_rect = r6_c_->GetAbsoluteRect(cx, cy);
-  host->RegisterFieldRect(FieldId::OcrExecutablePath, ocr_executable_path_rect);
-  FillRoundedPanel(target, ocr_executable_path_rect, 6.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  host->AddHitRegion({ocr_executable_path_rect, HitKind::Field, Section::Data, FieldId::OcrExecutablePath, static_cast<int>(FieldId::OcrExecutablePath)});
-  if (host->GetActiveField() != FieldId::OcrExecutablePath) {
-    DrawTextLine(target, host->GetShell().small_format(), draft.ocr_executable_path.empty() ? host->GetShell().muted_text_brush() : host->GetShell().text_brush(), InsetRectCopy(ocr_executable_path_rect, host->DipToPx(10.0f), 0), draft.ocr_executable_path.empty() ? L"\u9ed8\u8ba4\u5185\u7f6e" : draft.ocr_executable_path);
-  }
+  DrawSettingSectionTitle(target, host, cx, cy, title_node_, L"\u6570\u636e\u4e0e\u5de5\u5177");
+  DrawSettingPanelBox(target, host, cx, cy, card1_);
+  DrawSettingRows(target, host, cx, cy, vis_stats);
+  DrawSettingPanelBox(target, host, cx, cy, card2_);
+  DrawSettingRows(target, host, cx, cy, vis_tools);
 
   return max_scroll_y_;
 }

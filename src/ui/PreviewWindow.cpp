@@ -1,4 +1,5 @@
 ﻿#include "ui/PreviewWindow.h"
+#include "ui/PanelWindowChrome.h"
 
 #include <Richedit.h>
 #include <commctrl.h>
@@ -341,9 +342,20 @@ common::Status PreviewWindow::CreateControls() {
   for (HWND control : {html_plain_button_, html_source_button_, open_external_button_, image_copy_button_, ocr_copy_button_, ocr_paste_button_, ocr_rerun_button_, rich_edit_}) {
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
   }
-  SendMessageW(rich_edit_, EM_SETBKGNDCOLOR, 0, RGB(247, 249, 253));
+  ApplyPreviewRichEditTheme();
   SendMessageW(rich_edit_, EM_SETREADONLY, TRUE, 0);
   return common::Status::Ok();
+}
+
+void PreviewWindow::ApplyPreviewRichEditTheme() {
+  // C1：rich-edit 是 GDI 控件，不随 D2dShell 刷子，需单独随主题上色。
+  const bool dark = IsDarkThemeActive();
+  SendMessageW(rich_edit_, EM_SETBKGNDCOLOR, 0, dark ? RGB(0x2C, 0x2C, 0x2E) : RGB(247, 249, 253));
+  CHARFORMAT2W format{};
+  format.cbSize = sizeof(format);
+  format.dwMask = CFM_COLOR;
+  format.crTextColor = dark ? RGB(0xE8, 0xE8, 0xEA) : RGB(0x23, 0x26, 0x2D);
+  SendMessageW(rich_edit_, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&format));
 }
 
 void PreviewWindow::LayoutControls() {
@@ -520,13 +532,18 @@ void PreviewWindow::OpenWithSystemDefaultApp() {
 }
 
 void PreviewWindow::RenderFrame() {
+  // C1 暗色模式：主题纪元变化时重建刷子并刷新 DWM 暗色属性与 rich-edit 配色。
+  if (d2d_shell_.SyncTheme()) {
+    ApplyDarkModeAttribute(hwnd_, clipd2d::ui::IsDarkThemeActive());
+    ApplyPreviewRichEditTheme();
+  }
   ID2D1HwndRenderTarget* target = d2d_shell_.BeginFrame();
   if (target == nullptr) {
     return;
   }
   RECT client{};
   GetClientRect(hwnd_, &client);
-  target->Clear(D2D1::ColorF(0xF3F4F6));
+  target->Clear(d2d_shell_.ColorBackground());
 
   D2D1_RECT_F card = D2D1::RectF(16.0f, 16.0f, static_cast<float>(client.right - 16), static_cast<float>(client.bottom - 16));
   target->FillRoundedRectangle(D2D1::RoundedRect(card, 18.0f, 18.0f), d2d_shell_.surface_brush());

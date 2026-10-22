@@ -195,7 +195,7 @@ void DrawDialog(DialogState* state) {
         static_cast<float>(client.top),
         static_cast<float>(client.right),
         static_cast<float>(client.bottom));
-    target->Clear(D2D1::ColorF(0xFFFFFF));
+    target->Clear(state->d2d_shell.ColorSurface());
     target->FillRectangle(rect, state->d2d_shell.surface_brush());
     target->DrawRectangle(
         D2D1::RectF(rect.left + 0.5f, rect.top + 0.5f, rect.right - 0.5f, rect.bottom - 0.5f),
@@ -367,10 +367,10 @@ LRESULT CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_pa
         state->name_textbox.SetDrawCloseButton(false);
         state->name_textbox.SetFontSize(13.0f);
         state->name_textbox.SetFontFamily(L"Segoe UI");
-        state->name_textbox.SetTextColor(D2D1::ColorF(0x23262D));
-        state->name_textbox.SetPlaceholderColor(D2D1::ColorF(0x8D96A6));
+        state->name_textbox.SetTextColor(state->d2d_shell.ColorText());
+        state->name_textbox.SetPlaceholderColor(state->d2d_shell.ColorSubtleText());
         state->name_textbox.SetSelectionColor(D2D1::ColorF(0.23f, 0.48f, 1.0f, 0.25f));
-        state->name_textbox.SetBorderColor(D2D1::ColorF(0x3A7AFE));
+        state->name_textbox.SetBorderColor(state->d2d_shell.ColorAccent());
         state->name_textbox.SetText(state->config.initial_text);
         // 按 Enter 时触发确认
         state->name_textbox.SetOnEnterPressed([state]() {

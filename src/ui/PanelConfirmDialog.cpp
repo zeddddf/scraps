@@ -127,7 +127,7 @@ void DrawDialog(DialogState* state) {
         static_cast<float>(client.top),
         static_cast<float>(client.right),
         static_cast<float>(client.bottom));
-    target->Clear(D2D1::ColorF(0xFFFFFF));
+    target->Clear(state->d2d_shell.ColorSurface());
     target->FillRectangle(rect, state->d2d_shell.surface_brush());
     target->DrawRectangle(
         D2D1::RectF(rect.left + 0.5f, rect.top + 0.5f, rect.right - 0.5f, rect.bottom - 0.5f),

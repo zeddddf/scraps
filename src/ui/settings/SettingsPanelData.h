@@ -11,6 +11,7 @@ class SettingsPanelData : public ISettingsPanel {
 public:
     void Layout(float /*width*/, float& /*current_y*/, const DraftState& /*draft*/, ISettingsHost* /*host*/) override {}
     float Render(ID2D1HwndRenderTarget* target, const DraftState& draft, ISettingsHost* host, const RECT& content_rect) override;
+    std::vector<SettingRow> BuildRows(const DraftState& draft, ISettingsHost* host) const override;
 
 private:
     void BuildLayout(float width, float height, ISettingsHost* host);
@@ -19,6 +20,11 @@ private:
     float last_height_ = 0.0f;
     int last_scale_key_ = 0;
     float max_scroll_y_ = 0.0f;
+
+    // SettingRow 只保存 const wchar_t*：BuildRows 是 const 且返回后行仍被绘制，
+    // 格式化结果必须存活到下一次 BuildRows，故缓存在成员上。
+    mutable std::wstring db_size_text_;
+    mutable std::wstring cache_size_text_;
 
     std::shared_ptr<FlexNode> root_;
     std::shared_ptr<FlexNode> title_node_;
@@ -48,6 +54,10 @@ private:
     std::shared_ptr<FlexNode> r6_;
     std::shared_ptr<FlexNode> r6_t_;
     std::shared_ptr<FlexNode> r6_c_;
+    std::shared_ptr<FlexNode> r7_;
+    std::shared_ptr<FlexNode> r7_t_;
+    std::shared_ptr<FlexNode> r7_s_;
+    std::shared_ptr<FlexNode> r7_c_;
 };
 
 }  // namespace clipd2d::ui

@@ -4,6 +4,7 @@
 #include <dwmapi.h>
 #include <windowsx.h>
 
+#include "ui/PanelWindowChrome.h"
 #include "common/StringUtil.h"
 
 namespace clipd2d::ui {
@@ -172,7 +173,14 @@ common::Status DialogPanelWindow::InitTextBox() {
   text_box_.SetPlaceholderColor(D2D1::ColorF(0x8D96A6));
   text_box_.SetSelectionColor(D2D1::ColorF(0.23f, 0.48f, 1.0f, 0.25f));
   text_box_.SetBorderColor(D2D1::ColorF(0x3A7AFE));
+  ApplyThemeToTextboxes();
   return common::Status::Ok();
+}
+
+void DialogPanelWindow::ApplyThemeToTextboxes() {
+  text_box_.SetTextColor(d2d_shell_.ColorText());
+  text_box_.SetPlaceholderColor(d2d_shell_.ColorSubtleText());
+  text_box_.SetBorderColor(d2d_shell_.ColorAccent());
 }
 
 void DialogPanelWindow::Show(const Config& config, HostActions actions) {
@@ -426,6 +434,11 @@ void DialogPanelWindow::LayoutWindow() {
 }
 
 void DialogPanelWindow::RenderFrame() {
+  // C1 暗色模式：主题纪元变化时重建刷子并同步文本框颜色与 DWM 暗色属性。
+  if (d2d_shell_.SyncTheme()) {
+    ApplyThemeToTextboxes();
+    ApplyDarkModeAttribute(hwnd_, clipd2d::ui::IsDarkThemeActive());
+  }
   ID2D1HwndRenderTarget* target = d2d_shell_.BeginFrame();
   if (target == nullptr) {
     return;
@@ -434,7 +447,7 @@ void DialogPanelWindow::RenderFrame() {
   RECT client{};
   GetClientRect(hwnd_, &client);
   hit_regions_.clear();
-  target->Clear(D2D1::ColorF(0xFFFFFF));
+  target->Clear(d2d_shell_.ColorSurface());
   target->FillRectangle(
       D2D1::RectF(0.0f, 0.0f,
           static_cast<float>(client.right), static_cast<float>(client.bottom)),

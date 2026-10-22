@@ -1,5 +1,6 @@
 #include "ui/settings/SettingsPanelAbout.h"
 #include "ui/settings/ISettingsHost.h"
+#include "ui/settings/SettingsRow.h"
 #include "ui/settings/SettingsTypes.h"
 #include "ui/settings/SettingsDrawUtil.h"
 #include "ui/layout/FlexNode.h"
@@ -39,9 +40,18 @@ void SettingsPanelAbout::BuildLayout(float width, float height, ISettingsHost* h
 
     row2_toggle_ = std::make_shared<FlexNode>();
     row2_->AddChild(row2_toggle_);
+
+    row3_ = std::make_shared<FlexNode>();
+    card_->AddChild(row3_);
+    auto row3_txt = std::make_shared<FlexNode>();
+    row3_txt->FlexDirection(YGFlexDirectionColumn).JustifyContent(YGJustifyCenter);
+    row3_->AddChild(row3_txt);
+    row3_t_ = std::make_shared<FlexNode>(); row3_txt->AddChild(row3_t_);
+    row3_s_ = std::make_shared<FlexNode>(); row3_txt->AddChild(row3_s_);
+    row3_c_ = std::make_shared<FlexNode>(); row3_->AddChild(row3_c_);
   }
 
-  root_->Width(width).Height(height).FlexDirection(YGFlexDirectionColumn);
+  root_->Width(width).FlexDirection(YGFlexDirectionColumn);  // 根高自适应内容：钉死视口高会让 max_scroll_y 恒为 0（滚动失效根因）
 
   title_node_->Height(static_cast<float>(host->DipToPx(32.0f)))
             .Margin(YGEdgeBottom, static_cast<float>(host->DipToPx(4.0f)));
@@ -64,8 +74,24 @@ void SettingsPanelAbout::BuildLayout(float width, float height, ISettingsHost* h
   row2_toggle_->Width(static_cast<float>(host->DipToPx(44.0f)))
              .Height(static_cast<float>(host->DipToPx(18.0f)));
 
+  row3_->Height(static_cast<float>(host->DipToPx(60.0f))).Padding(YGEdgeHorizontal, padding).FlexDirection(YGFlexDirectionRow).AlignItems(YGAlignCenter).JustifyContent(YGJustifySpaceBetween);
+  row3_t_->Height(static_cast<float>(host->DipToPx(18.0f))).Margin(YGEdgeBottom, static_cast<float>(host->DipToPx(2.0f)));
+  row3_s_->Height(static_cast<float>(host->DipToPx(14.0f)));
+  row3_c_->Width(static_cast<float>(host->DipToPx(88.0f))).Height(static_cast<float>(host->DipToPx(28.0f)));
+
   root_->CalculateLayout(width, YGUndefined);
   max_scroll_y_ = std::max(0.0f, root_->GetHeight() - height);
+}
+
+std::vector<SettingRow> SettingsPanelAbout::BuildRows(const DraftState& draft, ISettingsHost* /*host*/) const {
+  // row2 旧行为是标题画在整行矩形（左缩 24px）+ DrawTextLine，
+  // 用 title_pad_left_dip + Line 模式精确复刻。
+  SettingRow about_info = MakeInfoRow(row1_, row1_title_, row1_subtitle_, L"Scraps", L"\u7248\u672c 1.0.0");
+  SettingRow about_toggle = MakeToggleRow(row2_, row2_, nullptr, row2_toggle_, L"\u63a5\u7ba1 Win+V", L"",
+                                          draft.enable_win_v_override, Section::About, 7, false);
+  about_toggle.text_mode = SettingRow::TextMode::Line;
+  about_toggle.title_pad_left_dip = 24.0f;
+  return {about_info, about_toggle, MakeResetRow(row3_, row3_t_, row3_s_, row3_c_, Section::About)};
 }
 
 float SettingsPanelAbout::Render(ID2D1HwndRenderTarget* target, const DraftState& draft, ISettingsHost* host, const RECT& content_rect) {
@@ -73,30 +99,25 @@ float SettingsPanelAbout::Render(ID2D1HwndRenderTarget* target, const DraftState
   float height = static_cast<float>(content_rect.bottom - content_rect.top);
   int scale_key = host->DipToPx(100);
 
+  bool relayout = false;
   if (width != last_width_ || height != last_height_ || scale_key != last_scale_key_ || !root_) {
     BuildLayout(width, height, host);
     last_width_ = width;
     last_height_ = height;
     last_scale_key_ = scale_key;
+    relayout = true;
   }
+
+  const std::vector<SettingRow> rows = BuildRows(draft, host);
+  SetDrawnRows(rows);
+  PrepareSettingRows(root_.get(), width, height, &max_scroll_y_, relayout);
 
   float cx = static_cast<float>(content_rect.left);
   float cy = static_cast<float>(content_rect.top) - host->GetScrollY();
 
-  // Render using calculated rects
-  DrawTextLine(target, host->GetShell().section_format(), host->GetShell().text_brush(), title_node_->GetAbsoluteRect(cx, cy), L"\u5173\u4e8e");
-  FillRoundedPanel(target, card_->GetAbsoluteRect(cx, cy), 16.0f, host->GetShell().surface_brush(), host->GetShell().border_brush(), 0.5f);
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), row1_title_->GetAbsoluteRect(cx, cy), L"Scraps");
-  DrawParagraph(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), row1_subtitle_->GetAbsoluteRect(cx, cy), L"\u7248\u672c 1.0.0");
-  DrawRowDivider(target, host->GetShell(), row1_->GetAbsoluteRect(cx, cy));
-
-  RECT r2_rect = row2_->GetAbsoluteRect(cx, cy);
-  r2_rect.left += host->DipToPx(24.0f); // manual padding compensation for DrawTextLine full row span
-  DrawTextLine(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r2_rect, L"\u63a5\u7ba1 Win+V");
-  RECT win_v_toggle_rect = row2_toggle_->GetAbsoluteRect(cx, cy);
-  DrawToggle(target, win_v_toggle_rect, draft.enable_win_v_override, host->GetShell());
-  host->AddHitRegion({win_v_toggle_rect, HitKind::Toggle, Section::About, FieldId::None, 7});
+  DrawSettingSectionTitle(target, host, cx, cy, title_node_, L"\u5173\u4e8e");
+  DrawSettingPanelBox(target, host, cx, cy, card_);
+  DrawSettingRows(target, host, cx, cy, rows);
 
   return max_scroll_y_;
 }

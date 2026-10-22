@@ -1,5 +1,6 @@
 #include "ui/MainWindowInternal.h"
 #include "app/StartupTrace.h"
+#include "common/AppIcon.h"
 #include <psapi.h>
 #include "ui/ClipVisualAssets.h"
 #include "ui/PanelWindowChrome.h"
@@ -51,6 +52,8 @@ common::Status MainWindow::Create(
   window_class.lpfnWndProc = &MainWindow::StaticWindowProc;
   window_class.hInstance = instance_;
   window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  window_class.hIcon = clipd2d::common::LoadAppIcon();
+  window_class.hIconSm = clipd2d::common::LoadAppIcon();
   window_class.hbrBackground = nullptr;
   window_class.lpszClassName = kMainWindowClassName;
   RegisterClassExW(&window_class);
@@ -244,6 +247,15 @@ LRESULT CALLBACK MainWindow::StaticWindowProc(HWND hwnd, UINT message, WPARAM w_
   return DefWindowProcW(hwnd, message, w_param, l_param);
 }
 
+void MainWindow::ApplyThemeToTextboxes() {
+  const D2D1_COLOR_F text_color = d2d_shell_.ColorText();
+  const D2D1_COLOR_F placeholder_color = d2d_shell_.ColorSubtleText();
+  search_textbox_.SetTextColor(text_color);
+  search_textbox_.SetPlaceholderColor(placeholder_color);
+  overlay_textbox_.SetTextColor(text_color);
+  overlay_textbox_.SetPlaceholderColor(placeholder_color);
+}
+
 common::Status MainWindow::CreateControls() {
 
   if (!search_textbox_.Initialize(d2d_shell_.dwrite_factory())) {
@@ -288,7 +300,40 @@ common::Status MainWindow::CreateControls() {
     CommitOverlayDialog();
   });
 
+  ApplyThemeToTextboxes();
   return common::Status::Ok();
+}
+
+void MainWindow::HandleSystemThemeChange() {
+  // C1：跟随系统主题 —— 收到系统深浅色变化（ImmersiveColorSet）时重算全局主题。
+  const core::store::AppSettings settings =
+      controller_ != nullptr ? controller_->current_settings() : core::store::AppSettings{};
+  if (settings.theme != core::store::ThemeMode::System) {
+    return;
+  }
+  SetDarkThemeActive(IsSystemDarkTheme());
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::SetBlurPreview(core::store::WindowBlurType type, int opacity) {
+  // C3：设置窗毛玻璃控件变动的实时预览（不落库）。
+  blur_preview_active_ = true;
+  preview_blur_type_ = type;
+  preview_blur_opacity_ = opacity;
+  ApplyWindowBlur(hwnd_, type);
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ClearBlurPreview() {
+  if (!blur_preview_active_) {
+    return;
+  }
+  blur_preview_active_ = false;
+  const core::store::WindowBlurType saved = controller_ != nullptr
+      ? controller_->current_settings().window_blur_type
+      : core::store::WindowBlurType::Mica;
+  ApplyWindowBlur(hwnd_, saved);
+  InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 common::Status MainWindow::EnsurePreviewWindowCreated() {
@@ -399,7 +444,7 @@ void MainWindow::LayoutControls() {
 }
 
 void MainWindow::UpdateRoundedRegion() {
-  ApplyPopupPanelWindowChrome(hwnd_, kPopupPanelLightBorderColor);
+  ApplyPopupPanelWindowChrome(hwnd_, PopupPanelBorderColor());
 }
 
 void MainWindow::SaveWindowPlacementIfNeeded(bool include_position) {
@@ -1408,6 +1453,15 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
     case WM_COMMAND:
       if (LOWORD(w_param) == kIdSearchClearButton && HIWORD(w_param) == BN_CLICKED) {
         ClearSearch();
+        return 0;
+      }
+      break;
+
+    case WM_SETTINGCHANGE:
+      // 系统主题（深浅色）变化广播：跟随系统模式下重算全局明暗态。
+      if (l_param != 0 && CompareStringOrdinal(
+              reinterpret_cast<LPCWSTR>(l_param), -1, L"ImmersiveColorSet", -1, TRUE) == CSTR_EQUAL) {
+        HandleSystemThemeChange();
         return 0;
       }
       break;

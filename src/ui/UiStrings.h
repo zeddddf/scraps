@@ -46,6 +46,12 @@ inline constexpr wchar_t kTagDeleteCurrent[] = L"\u5220\u9664\u5f53\u524d\u6807\
 
 inline constexpr wchar_t kEmptyListTitle[] = L"\u8fd8\u6ca1\u6709\u526a\u8d34\u677f\u8bb0\u5f55";
 inline constexpr wchar_t kEmptyListBody[] = L"\u590d\u5236\u6587\u672c\u3001\u56fe\u7247\u6216\u6587\u4ef6\u540e\u4f1a\u81ea\u52a8\u51fa\u73b0\u5728\u8fd9\u91cc\u3002";
+// C4 空态引导：区分「库真空」与「搜索/筛选无结果」，前者附热键引导。
+inline constexpr wchar_t kEmptySearchTitle[] = L"\u6ca1\u6709\u5339\u914d\u7684\u8bb0\u5f55";
+inline constexpr wchar_t kEmptySearchBody[] = L"\u8c03\u6574\u641c\u7d22\u8bcd\u6216\u6e05\u9664\u7b5b\u9009\u540e\u518d\u8bd5\u8bd5\u3002";
+inline constexpr wchar_t kEmptyGuidePanel[] = L"\u547c\u51fa / \u9690\u85cf\u9762\u677f";
+inline constexpr wchar_t kEmptyGuideSearch[] = L"\u641c\u7d22\u526a\u8d34\u677f";
+inline constexpr wchar_t kEmptyGuideScreenshot[] = L"\u5c4f\u5e55\u622a\u56fe";
 
 inline constexpr wchar_t kStatusSeparator[] = L" \u00b7 ";
 inline constexpr wchar_t kStatusQueueSummaryPrefix[] = L"\u961f\u5217 ";

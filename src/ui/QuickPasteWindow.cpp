@@ -18,6 +18,7 @@
 #include "ui/ClipVisualAssets.h"
 #include "ui/ClipVisualFileContent.h"
 #include "ui/D2dUtil.h"
+#include "ui/PanelWindowChrome.h"
 #include "ui/FluentIcons.h"
 #include "ui/PanelWindowChrome.h"
 
@@ -483,7 +484,7 @@ common::Status QuickPasteWindow::Create(HINSTANCE instance, HWND owner) {
     return status;
   }
 
-  ApplyPopupPanelWindowChrome(hwnd_, kPopupPanelLightBorderColor);
+  ApplyPopupPanelWindowChrome(hwnd_, PopupPanelBorderColor());
   ShowWindow(hwnd_, SW_HIDE);
   return common::Status::Ok();
 }
@@ -684,6 +685,11 @@ void QuickPasteWindow::LayoutWindow() {
 }
 
 void QuickPasteWindow::RenderFrame() {
+  // C1 暗色模式：主题纪元变化时重建刷子并刷新 DWM 暗色属性与描边。
+  if (d2d_shell_.SyncTheme()) {
+    ApplyDarkModeAttribute(hwnd_, clipd2d::ui::IsDarkThemeActive());
+    ApplyPopupPanelWindowChrome(hwnd_, PopupPanelBorderColor());
+  }
   ID2D1DeviceContext* target = d2d_shell_.BeginFrame1_1();
   if (target == nullptr) {
     return;

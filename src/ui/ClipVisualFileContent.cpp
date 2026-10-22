@@ -266,12 +266,12 @@ void Draw(
     }
   } else if (bitmap != nullptr && bitmap_width > 0 && bitmap_height > 0) {
     if (mode == FileVisualMode::ThumbnailCard) {
-      FillRoundedPanel(target, layout.front_card_rect, 9.0f, shell.white_brush(), shell.border_brush(), 1.0f);
+      FillRoundedPanel(target, layout.front_card_rect, 9.0f, shell.surface_brush(), shell.border_brush(), 1.0f);
     }
     target->DrawBitmap(bitmap, layout.bitmap_rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
   } else {
     if (mode == FileVisualMode::ThumbnailCard) {
-      FillRoundedPanel(target, layout.front_card_rect, 9.0f, shell.white_brush(), shell.border_brush(), 1.0f);
+      FillRoundedPanel(target, layout.front_card_rect, 9.0f, shell.surface_brush(), shell.border_brush(), 1.0f);
       const float card_width = static_cast<float>(layout.front_card_rect.right - layout.front_card_rect.left);
       const float card_height = static_cast<float>(layout.front_card_rect.bottom - layout.front_card_rect.top);
       const float icon_size = std::min(card_width, card_height) * 0.4f;

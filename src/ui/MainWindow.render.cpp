@@ -175,7 +175,8 @@ void MainWindow::RenderListRow(
   const bool selected = index == selected_index_;
   const bool hovered = RectContains(row, hover);
 
-  target->FillRectangle(ToRectF(row), d2d_shell_.white_brush());
+  // 行底/列表底用 surface（随主题），白刷只用于强调件上的文字/图标。
+  target->FillRectangle(ToRectF(row), d2d_shell_.surface_brush());
   if (selected) {
     target->FillRectangle(ToRectF(row), d2d_shell_.surface_selected_brush());
   } else if (hovered) {
@@ -360,7 +361,7 @@ void MainWindow::RenderListRow(
           chip_left + 30,
           header_rect.bottom + 2 + kTagChipHeight};
       target->FillRoundedRectangle(D2D1::RoundedRect(ToRectF(more_rect), 9.0f, 9.0f), d2d_shell_.surface_hover_brush());
-      DrawCachedCenteredText(&text_layout_cache_, d2d_shell_.dwrite_factory(), target, GetCachedPlusNumberString(hidden_tag_count), d2d_shell_.tiny_format(), d2d_shell_.text_brush(), more_rect);
+      DrawCachedCenteredText(&text_layout_cache_, d2d_shell_.dwrite_factory(), target, GetCachedPlusNumberString(static_cast<int>(hidden_tag_count)), d2d_shell_.tiny_format(), d2d_shell_.text_brush(), more_rect);
     }
   }
 
@@ -414,120 +415,45 @@ void MainWindow::RenderListRow(
     }
   }
 
-  if (summary->content_type == core::store::ClipContentType::Files) {
-    const std::wstring first_path = FirstFilePathFromSummary(*summary);
-    const std::wstring display_name =
-        summary->file_count > 1 ? SummaryTitle(*summary) : FileDisplayName(first_path);
-    const std::wstring path_line = FilePathLine(*summary, first_path);
-    const std::wstring trailing_text = FileTrailingText(*summary, first_path);
-    const bool supports_visual_thumbnail = SupportsSystemThumbnailPreviewPath(first_path);
-
-    if (supports_visual_thumbnail) {
-      const std::wstring thumb_key = ThumbnailKeyFromSummary(*summary);
-      const auto thumb = thumbnail_bitmaps_.find(thumb_key);
-      ID2D1Bitmap* bitmap = nullptr;
-      UINT bitmap_width = 0;
-      UINT bitmap_height = 0;
-      if (thumb != thumbnail_bitmaps_.end() && thumb->second.bitmap != nullptr) {
-        TouchBitmap(&thumb->second);
-        bitmap = thumb->second.bitmap.Get();
-        bitmap_width = thumb->second.width;
-        bitmap_height = thumb->second.height;
-      } else if (!thumb_key.empty()) {
-        RequestThumbnailAsync(*summary);
-      }
-      const std::wstring secondary_text = !path_line.empty() ? path_line : trailing_text;
-      file_content_preview::Draw(
-          target,
-          d2d_shell_,
-          bitmap,
-          bitmap_width,
-          bitmap_height,
-          content_rect,
-          display_name,
-          secondary_text,
-          summary->file_count,
-          file_content_preview::FileVisualMode::ThumbnailCard);
-    } else {
-      const std::wstring secondary_text = !path_line.empty() ? path_line : trailing_text;
-      ID2D1Bitmap* file_icon_bitmap = nullptr;
-      UINT file_icon_width = 0;
-      UINT file_icon_height = 0;
-      const auto file_request_opt = BuildFileItemIconRequest(*summary);
-      if (file_request_opt.has_value()) {
-        const std::wstring icon_key = visual_assets::BuildShellIconCacheKey(*file_request_opt);
-        const auto it = thumbnail_bitmaps_.find(icon_key);
+  // P3-16: 行内容渲染经 IRowRenderer 注册表按类型分发（文本/图片/文件三实现，
+  // 见 ui/RowRenderer.h）。行框架（背景/骨架/头部/操作按钮）仍由本函数绘制。
+  {
+    using clipd2d::ui::RowBitmapKind;
+    using clipd2d::ui::RowBitmapRef;
+    clipd2d::ui::RowContentContext ctx;
+    ctx.target = target;
+    ctx.content_rect = content_rect;
+    ctx.summary = summary;
+    ctx.shell = &d2d_shell_;
+    ctx.text_layout_cache = &text_layout_cache_;
+    ctx.search_tokens = &search_tokens;
+    ctx.resolve_bitmap = [this](RowBitmapKind kind, const core::store::ClipSummary& s) -> RowBitmapRef {
+      if (kind == RowBitmapKind::FileItemIcon) {
+        const auto req = BuildFileItemIconRequest(s);
+        if (!req.has_value()) {
+          return {};
+        }
+        const std::wstring key = visual_assets::BuildShellIconCacheKey(*req);
+        const auto it = thumbnail_bitmaps_.find(key);
         if (it != thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
           TouchBitmap(&it->second);
-          file_icon_bitmap = it->second.bitmap.Get();
-          file_icon_width = it->second.width;
-          file_icon_height = it->second.height;
-        } else {
-          RequestFileItemIconAsync(*summary);
+          return {it->second.bitmap.Get(), it->second.width, it->second.height};
         }
+        RequestFileItemIconAsync(s);
+        return {};
       }
-
-      file_content_preview::Draw(
-          target,
-          d2d_shell_,
-          file_icon_bitmap,
-          file_icon_width,
-          file_icon_height,
-          content_rect,
-          display_name,
-          secondary_text,
-          summary->file_count,
-          summary->file_count <= 1
-              ? file_content_preview::FileVisualMode::SingleFileIcon
-              : file_content_preview::FileVisualMode::IconOnly);
-    }
-  } else if (summary->content_type == core::store::ClipContentType::Image) {
-    const std::wstring thumb_key = ThumbnailKeyFromSummary(*summary);
-    auto thumb = thumbnail_bitmaps_.find(thumb_key);
-    ID2D1Bitmap* bitmap = nullptr;
-    UINT bitmap_width = 0;
-    UINT bitmap_height = 0;
-    if (thumb != thumbnail_bitmaps_.end() && thumb->second.bitmap != nullptr) {
-      TouchBitmap(&thumb->second);
-      bitmap = thumb->second.bitmap.Get();
-      bitmap_width = thumb->second.width;
-      bitmap_height = thumb->second.height;
-    } else if (!thumb_key.empty()) {
-      RequestThumbnailAsync(*summary);
-    }
-    image_preview::Draw(
-        target,
-        d2d_shell_,
-        bitmap,
-        bitmap_width,
-        bitmap_height,
-        content_rect);
-  } else {
-    const std::wstring content_text = RowContentText(*summary);
-    if (!search_tokens.empty()) {
-      DrawHighlightedText(
-          d2d_shell_.dwrite_factory(),
-          target,
-          content_text,
-          d2d_shell_.small_format(),
-          d2d_shell_.text_brush(),
-          d2d_shell_.accent_soft_brush(),
-          content_rect,
-          false,
-          search_tokens);
-    } else {
-      DrawCachedText(
-          &text_layout_cache_,
-          d2d_shell_.dwrite_factory(),
-          target,
-          *summary,
-          CachedTextRole::Content,
-          content_text,
-          d2d_shell_.small_format(),
-          d2d_shell_.text_brush(),
-          content_rect,
-          false);
-    }
+      const std::wstring key = ThumbnailKeyFromSummary(s);
+      const auto it = thumbnail_bitmaps_.find(key);
+      if (it != thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
+        TouchBitmap(&it->second);
+        return {it->second.bitmap.Get(), it->second.width, it->second.height};
+      }
+      if (!key.empty()) {
+        RequestThumbnailAsync(s);
+      }
+      return {};
+    };
+    clipd2d::ui::RowContentRendererFor(summary->content_type).Render(ctx);
   }
 }
 
@@ -559,6 +485,56 @@ void MainWindow::RenderDirtyRows(
   target->PopAxisAlignedClip();
 }
 
+void MainWindow::RenderEmptyListGuidance(
+    ID2D1RenderTarget* target,
+    const RECT& list_rect,
+    const core::store::AppSettings& render_settings) {
+  // C4 空态引导：真空库附热键引导行；搜索/筛选无结果给调正提示。
+  RECT rect{list_rect.left + 20, list_rect.top + 80, list_rect.right - 20, list_rect.top + 190};
+  const bool has_query = !search_textbox_.GetText().empty();
+  const wchar_t* title = has_query ? strings::kEmptySearchTitle : strings::kEmptyListTitle;
+  const wchar_t* body = has_query ? strings::kEmptySearchBody : strings::kEmptyListBody;
+  target->DrawTextW(
+      title, static_cast<UINT32>(wcslen(title)),
+      d2d_shell_.section_format(), ToRectF(rect),
+      d2d_shell_.text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+  rect.top += 36;
+  target->DrawTextW(
+      body, static_cast<UINT32>(wcslen(body)),
+      d2d_shell_.small_format(), ToRectF(rect),
+      d2d_shell_.muted_text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+  if (has_query) {
+    return;
+  }
+  struct GuideRow {
+    const wchar_t* hotkey;
+    const wchar_t* label;
+  };
+  const GuideRow rows[] = {
+      {render_settings.hotkey.c_str(), strings::kEmptyGuidePanel},
+      {L"Ctrl+F", strings::kEmptyGuideSearch},
+      {render_settings.screenshot_hotkey.c_str(), strings::kEmptyGuideScreenshot},
+  };
+  rect.top += 46;
+  const float row_height_dip = 24.0f;
+  const float s = d2d_shell_.dpi_scale();
+  const int row_height = static_cast<int>(row_height_dip * s);
+  const int key_width = static_cast<int>(150.0f * s);
+  for (const GuideRow& row : rows) {
+    const RECT key_rect{rect.left, rect.top, rect.left + key_width, rect.top + row_height};
+    const RECT label_rect{rect.left + key_width + static_cast<int>(8.0f * s), rect.top, rect.right, rect.top + row_height};
+    target->DrawTextW(
+        row.hotkey, static_cast<UINT32>(wcslen(row.hotkey)),
+        d2d_shell_.small_format(), ToRectF(key_rect),
+        d2d_shell_.accent_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    target->DrawTextW(
+        row.label, static_cast<UINT32>(wcslen(row.label)),
+        d2d_shell_.small_format(), ToRectF(label_rect),
+        d2d_shell_.muted_text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    rect.top += row_height + static_cast<int>(6.0f * s);
+  }
+}
+
 void MainWindow::RenderLiveResizeListSurface(
     ID2D1RenderTarget* target,
     const RECT& client,
@@ -571,22 +547,7 @@ void MainWindow::RenderLiveResizeListSurface(
   target->PushAxisAlignedClip(ToRectF(list_rect), D2D1_ANTIALIAS_MODE_ALIASED);
 
   if (item_count_ == 0) {
-    RECT empty_rect{list_rect.left + 20, list_rect.top + 110, list_rect.right - 20, list_rect.top + 220};
-    target->DrawTextW(
-        strings::kEmptyListTitle,
-        static_cast<UINT32>(wcslen(strings::kEmptyListTitle)),
-        d2d_shell_.section_format(),
-        ToRectF(empty_rect),
-        d2d_shell_.text_brush(),
-        D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    empty_rect.top += 34;
-    target->DrawTextW(
-        strings::kEmptyListBody,
-        static_cast<UINT32>(wcslen(strings::kEmptyListBody)),
-        d2d_shell_.small_format(),
-        ToRectF(empty_rect),
-        d2d_shell_.muted_text_brush(),
-        D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    RenderEmptyListGuidance(target, list_rect, render_settings);
     target->PopAxisAlignedClip();
     return;
   }
@@ -696,7 +657,7 @@ void MainWindow::RenderListSurface(
   }
 
   target->PushAxisAlignedClip(ToRectF(list_rect), D2D1_ANTIALIAS_MODE_ALIASED);
-  target->FillRectangle(ToRectF(list_rect), d2d_shell_.white_brush());
+  target->FillRectangle(ToRectF(list_rect), d2d_shell_.surface_brush());
   
 
   const int item_height = GetItemHeight();
@@ -805,10 +766,7 @@ void MainWindow::RenderListSurface(
   }
 
   if (item_count_ == 0) {
-    RECT empty_rect{list_rect.left + 20, list_rect.top + 110, list_rect.right - 20, list_rect.top + 220};
-    target->DrawTextW(strings::kEmptyListTitle, static_cast<UINT32>(wcslen(strings::kEmptyListTitle)), d2d_shell_.section_format(), ToRectF(empty_rect), d2d_shell_.text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    empty_rect.top += 34;
-    target->DrawTextW(strings::kEmptyListBody, static_cast<UINT32>(wcslen(strings::kEmptyListBody)), d2d_shell_.small_format(), ToRectF(empty_rect), d2d_shell_.muted_text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    RenderEmptyListGuidance(target, list_rect, render_settings);
   }
 
   target->PopAxisAlignedClip();
@@ -841,6 +799,12 @@ void MainWindow::RenderListSurface(
 
 void MainWindow::RenderFrame() {
   EnsureBitmapCachesValid();
+  // C1 暗色模式：主题纪元变化时重建刷子并刷新 DWM 暗色属性与文本框颜色。
+  if (d2d_shell_.SyncTheme()) {
+    ApplyDarkModeAttribute(hwnd_, clipd2d::ui::IsDarkThemeActive());
+    ApplyThemeToTextboxes();
+    UpdateRoundedRegion();
+  }
   ID2D1DeviceContext* target = d2d_shell_.BeginFrame1_1();
   if (target == nullptr) {
     return;
@@ -873,8 +837,13 @@ void MainWindow::RenderFrame() {
   target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
   float bg_alpha = 1.0f;
   const auto& settings = controller_->current_settings();
-  if (settings.window_blur_type != core::store::WindowBlurType::None) {
-      bg_alpha = static_cast<float>(settings.window_blur_opacity) / 100.0f;
+  // C3 外观即时预览：设置窗拖动毛玻璃控件时未保存的值实时生效。
+  const core::store::WindowBlurType blur_type = blur_preview_active_
+      ? preview_blur_type_ : settings.window_blur_type;
+  const int blur_opacity = blur_preview_active_
+      ? preview_blur_opacity_ : settings.window_blur_opacity;
+  if (blur_type != core::store::WindowBlurType::None) {
+      bg_alpha = static_cast<float>(blur_opacity) / 100.0f;
   }
   
   if (d2d_shell_.is_dcomp()) {
@@ -916,11 +885,11 @@ void MainWindow::RenderFrame() {
     const RECT clear_rect = SearchClearButtonRect(layout);
     const bool hovered = RectContains(clear_rect, hover) || search_clear_hovered_;
     const bool pressed = IsPressedStaticHit(HitKind::SearchClear, 0) || search_clear_pressed_;
-    const D2D1_COLOR_F text_color = pressed ? D2D1::ColorF(0x23262D) : D2D1::ColorF(0x5E6573);
+    const D2D1_COLOR_F text_color = pressed ? d2d_shell_.ColorText() : d2d_shell_.ColorMutedText();
 
     if (hovered || pressed) {
-      const D2D1_COLOR_F fill_color = pressed ? D2D1::ColorF(0xEDF4FF) : D2D1::ColorF(0xF5F8FF);
-      const D2D1_COLOR_F border_color = pressed ? D2D1::ColorF(0x3A7AFE) : D2D1::ColorF(0xD7DFED);
+      const D2D1_COLOR_F fill_color = pressed ? d2d_shell_.ColorAccentSoft() : d2d_shell_.ColorSurfaceHover();
+      const D2D1_COLOR_F border_color = pressed ? d2d_shell_.ColorAccent() : d2d_shell_.ColorBorder();
 
       // Q2:固定色走 D2dShell 缓存,不再每帧 CreateSolidColorBrush。
       if (ID2D1SolidColorBrush* fill_brush = d2d_shell_.solid_brush(target, fill_color)) {

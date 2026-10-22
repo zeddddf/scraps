@@ -1,5 +1,6 @@
 #include "ui/settings/SettingsPanelHotkey.h"
 #include "ui/settings/ISettingsHost.h"
+#include "ui/settings/SettingsRow.h"
 #include "ui/settings/SettingsTypes.h"
 #include "ui/settings/SettingsDrawUtil.h"
 #include "ui/layout/FlexNode.h"
@@ -61,9 +62,18 @@ void SettingsPanelHotkey::BuildLayout(float width, float height, ISettingsHost* 
     r5_t_ = std::make_shared<FlexNode>(); r5_txt->AddChild(r5_t_);
     r5_s_ = std::make_shared<FlexNode>(); r5_txt->AddChild(r5_s_);
     r5_c_ = std::make_shared<FlexNode>(); r5_->AddChild(r5_c_);
+
+    r6_ = std::make_shared<FlexNode>();
+    card1_->AddChild(r6_);
+    auto r6_txt = std::make_shared<FlexNode>();
+    r6_txt->FlexDirection(YGFlexDirectionColumn).JustifyContent(YGJustifyCenter);
+    r6_->AddChild(r6_txt);
+    r6_t_ = std::make_shared<FlexNode>(); r6_txt->AddChild(r6_t_);
+    r6_s_ = std::make_shared<FlexNode>(); r6_txt->AddChild(r6_s_);
+    r6_c_ = std::make_shared<FlexNode>(); r6_->AddChild(r6_c_);
   }
 
-  root_->Width(width).Height(height).FlexDirection(YGFlexDirectionColumn);
+  root_->Width(width).FlexDirection(YGFlexDirectionColumn);  // 根高自适应内容：钉死视口高会让 max_scroll_y 恒为 0（滚动失效根因）
 
   title_node_->Height(static_cast<float>(host->DipToPx(32.0f))).Margin(YGEdgeBottom, static_cast<float>(host->DipToPx(4.0f)));
 
@@ -93,8 +103,30 @@ void SettingsPanelHotkey::BuildLayout(float width, float height, ISettingsHost* 
   r5_s_->Height(static_cast<float>(host->DipToPx(14.0f)));
   r5_c_->Width(static_cast<float>(host->DipToPx(180.0f))).Height(static_cast<float>(host->DipToPx(28.0f)));
 
+
+  r6_->Height(static_cast<float>(host->DipToPx(60.0f))).Padding(YGEdgeHorizontal, padding).FlexDirection(YGFlexDirectionRow).AlignItems(YGAlignCenter).JustifyContent(YGJustifySpaceBetween);
+  r6_t_->Height(static_cast<float>(host->DipToPx(18.0f))).Margin(YGEdgeBottom, static_cast<float>(host->DipToPx(2.0f)));
+  r6_s_->Height(static_cast<float>(host->DipToPx(14.0f)));
+  r6_c_->Width(static_cast<float>(host->DipToPx(88.0f))).Height(static_cast<float>(host->DipToPx(28.0f)));
   root_->CalculateLayout(width, YGUndefined);
   max_scroll_y_ = std::max(0.0f, root_->GetHeight() - height);
+}
+
+std::vector<SettingRow> SettingsPanelHotkey::BuildRows(const DraftState& draft, ISettingsHost* /*host*/) const {
+  // 命中 option=(int)field_id（SettingsWindow::BeginEditing 依赖该值）。
+  return {
+      MakeFieldRow(r1_, r1_t_, r1_s_, r1_c_, L"\u9762\u677f\u5524\u9192\u70ed\u952e", L"\u5168\u5c40\u547c\u51fa Scraps \u4e3b\u9762\u677f",
+                   draft.hotkey, Section::Hotkey, FieldId::Hotkey, true, L"\u672a\u8bbe\u7f6e"),
+      MakeFieldRow(r2_, r2_t_, r2_s_, r2_c_, L"\u5feb\u6377\u7c98\u8d34\u70ed\u952e", L"\u5feb\u901f\u7c98\u8d34\u4e0a\u4e00\u6761\u8bb0\u5f55\uff08\u53ef\u9009\uff09",
+                   draft.quick_paste_hotkey, Section::Hotkey, FieldId::QuickPasteHotkey, true, L"\u65e0"),
+      MakeFieldRow(r3_, r3_t_, r3_s_, r3_c_, L"\u805a\u7126\u641c\u7d22\u6846\u70ed\u952e", L"\u5feb\u901f\u805a\u7126\u5230\u641c\u7d22\u6846",
+                   draft.search_focus_hotkey, Section::Hotkey, FieldId::SearchFocusHotkey, true, L"\u65e0"),
+      MakeFieldRow(r4_, r4_t_, nullptr, r4_c_, L"\u7b2c\u4e09\u65b9\u8d34\u56fe\u5feb\u6377\u952e", L"",
+                   draft.third_party_sticker_hotkey, Section::Hotkey, FieldId::ThirdPartyStickerHotkey, true, L"\u65e0"),
+      MakeFieldRow(r5_, r5_t_, r5_s_, r5_c_, L"\u5c4f\u5e55\u622a\u56fe\u5feb\u6377\u952e", L"\u5168\u5c40\u547c\u51fa\u622a\u56fe\u529f\u80fd",
+                   draft.screenshot_hotkey, Section::Hotkey, FieldId::ScreenshotHotkey, false, L"\u672a\u8bbe\u7f6e"),
+      MakeResetRow(r6_, r6_t_, r6_s_, r6_c_, Section::Hotkey),
+  };
 }
 
 float SettingsPanelHotkey::Render(ID2D1HwndRenderTarget* target, const DraftState& draft, ISettingsHost* host, const RECT& content_rect) {
@@ -102,71 +134,25 @@ float SettingsPanelHotkey::Render(ID2D1HwndRenderTarget* target, const DraftStat
   float height = static_cast<float>(content_rect.bottom - content_rect.top);
   int scale_key = host->DipToPx(100);
 
+  bool relayout = false;
   if (width != last_width_ || height != last_height_ || scale_key != last_scale_key_ || !root_) {
     BuildLayout(width, height, host);
     last_width_ = width;
     last_height_ = height;
     last_scale_key_ = scale_key;
+    relayout = true;
   }
+
+  const std::vector<SettingRow> rows = BuildRows(draft, host);
+  SetDrawnRows(rows);
+  PrepareSettingRows(root_.get(), width, height, &max_scroll_y_, relayout);
 
   float cx = static_cast<float>(content_rect.left);
   float cy = static_cast<float>(content_rect.top) - host->GetScrollY();
 
-  DrawTextLine(target, host->GetShell().section_format(), host->GetShell().text_brush(), title_node_->GetAbsoluteRect(cx, cy), L"\u5feb\u6377\u952e");
-  FillRoundedPanel(target, card1_->GetAbsoluteRect(cx, cy), 16.0f, host->GetShell().surface_brush(), host->GetShell().border_brush(), 0.5f);
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r1_t_->GetAbsoluteRect(cx, cy), L"\u9762\u677f\u5524\u9192\u70ed\u952e");
-  DrawParagraph(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), r1_s_->GetAbsoluteRect(cx, cy), L"\u5168\u5c40\u547c\u51fa Scraps \u4e3b\u9762\u677f");
-  RECT hotkey_rect = r1_c_->GetAbsoluteRect(cx, cy);
-  host->RegisterFieldRect(FieldId::Hotkey, hotkey_rect);
-  FillRoundedPanel(target, hotkey_rect, 10.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  host->AddHitRegion({hotkey_rect, HitKind::Field, Section::Hotkey, FieldId::Hotkey, static_cast<int>(FieldId::Hotkey)});
-  if (host->GetActiveField() != FieldId::Hotkey) {
-    DrawTextLine(target, host->GetShell().small_format(), draft.hotkey.empty() ? host->GetShell().muted_text_brush() : host->GetShell().text_brush(), InsetRectCopy(hotkey_rect, host->DipToPx(10.0f), 0), draft.hotkey.empty() ? L"\u672a\u8bbe\u7f6e" : draft.hotkey);
-  }
-  DrawRowDivider(target, host->GetShell(), r1_->GetAbsoluteRect(cx, cy));
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r2_t_->GetAbsoluteRect(cx, cy), L"\u5feb\u6377\u7c98\u8d34\u70ed\u952e");
-  DrawParagraph(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), r2_s_->GetAbsoluteRect(cx, cy), L"\u5feb\u901f\u7c98\u8d34\u4e0a\u4e00\u6761\u8bb0\u5f55\uff08\u53ef\u9009\uff09");
-  RECT quick_paste_hotkey_rect = r2_c_->GetAbsoluteRect(cx, cy);
-  host->RegisterFieldRect(FieldId::QuickPasteHotkey, quick_paste_hotkey_rect);
-  FillRoundedPanel(target, quick_paste_hotkey_rect, 10.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  host->AddHitRegion({quick_paste_hotkey_rect, HitKind::Field, Section::Hotkey, FieldId::QuickPasteHotkey, static_cast<int>(FieldId::QuickPasteHotkey)});
-  if (host->GetActiveField() != FieldId::QuickPasteHotkey) {
-    DrawTextLine(target, host->GetShell().small_format(), draft.quick_paste_hotkey.empty() ? host->GetShell().muted_text_brush() : host->GetShell().text_brush(), InsetRectCopy(quick_paste_hotkey_rect, host->DipToPx(10.0f), 0), draft.quick_paste_hotkey.empty() ? L"\u65e0" : draft.quick_paste_hotkey);
-  }
-  DrawRowDivider(target, host->GetShell(), r2_->GetAbsoluteRect(cx, cy));
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r3_t_->GetAbsoluteRect(cx, cy), L"\u805a\u7126\u641c\u7d22\u6846\u70ed\u952e");
-  DrawParagraph(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), r3_s_->GetAbsoluteRect(cx, cy), L"\u5feb\u901f\u805a\u7126\u5230\u641c\u7d22\u6846");
-  RECT search_focus_hotkey_rect = r3_c_->GetAbsoluteRect(cx, cy);
-  host->RegisterFieldRect(FieldId::SearchFocusHotkey, search_focus_hotkey_rect);
-  FillRoundedPanel(target, search_focus_hotkey_rect, 10.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  host->AddHitRegion({search_focus_hotkey_rect, HitKind::Field, Section::Hotkey, FieldId::SearchFocusHotkey, static_cast<int>(FieldId::SearchFocusHotkey)});
-  if (host->GetActiveField() != FieldId::SearchFocusHotkey) {
-    DrawTextLine(target, host->GetShell().small_format(), draft.search_focus_hotkey.empty() ? host->GetShell().muted_text_brush() : host->GetShell().text_brush(), InsetRectCopy(search_focus_hotkey_rect, host->DipToPx(10.0f), 0), draft.search_focus_hotkey.empty() ? L"\u65e0" : draft.search_focus_hotkey);
-  }
-  DrawRowDivider(target, host->GetShell(), r3_->GetAbsoluteRect(cx, cy));
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r4_t_->GetAbsoluteRect(cx, cy), L"\u7b2c\u4e09\u65b9\u8d34\u56fe\u5feb\u6377\u952e");
-  RECT third_party_sticker_hotkey_rect = r4_c_->GetAbsoluteRect(cx, cy);
-  host->RegisterFieldRect(FieldId::ThirdPartyStickerHotkey, third_party_sticker_hotkey_rect);
-  FillRoundedPanel(target, third_party_sticker_hotkey_rect, 10.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  host->AddHitRegion({third_party_sticker_hotkey_rect, HitKind::Field, Section::Hotkey, FieldId::ThirdPartyStickerHotkey, static_cast<int>(FieldId::ThirdPartyStickerHotkey)});
-  if (host->GetActiveField() != FieldId::ThirdPartyStickerHotkey) {
-    DrawTextLine(target, host->GetShell().small_format(), draft.third_party_sticker_hotkey.empty() ? host->GetShell().muted_text_brush() : host->GetShell().text_brush(), InsetRectCopy(third_party_sticker_hotkey_rect, host->DipToPx(10.0f), 0), draft.third_party_sticker_hotkey.empty() ? L"\u65e0" : draft.third_party_sticker_hotkey);
-  }
-  DrawRowDivider(target, host->GetShell(), r4_->GetAbsoluteRect(cx, cy));
-
-  DrawParagraph(target, host->GetShell().body_bold_format(), host->GetShell().text_brush(), r5_t_->GetAbsoluteRect(cx, cy), L"\u5c4f\u5e55\u622a\u56fe\u5feb\u6377\u952e");
-  DrawParagraph(target, host->GetShell().small_format(), host->GetShell().muted_text_brush(), r5_s_->GetAbsoluteRect(cx, cy), L"\u5168\u5c40\u547c\u51fa\u622a\u56fe\u529f\u80fd");
-  RECT screenshot_hotkey_rect = r5_c_->GetAbsoluteRect(cx, cy);
-  host->RegisterFieldRect(FieldId::ScreenshotHotkey, screenshot_hotkey_rect);
-  FillRoundedPanel(target, screenshot_hotkey_rect, 10.0f, host->GetShell().surface_alt_brush(), host->GetShell().border_brush(), 0.5f);
-  host->AddHitRegion({screenshot_hotkey_rect, HitKind::Field, Section::Hotkey, FieldId::ScreenshotHotkey, static_cast<int>(FieldId::ScreenshotHotkey)});
-  if (host->GetActiveField() != FieldId::ScreenshotHotkey) {
-    DrawTextLine(target, host->GetShell().small_format(), draft.screenshot_hotkey.empty() ? host->GetShell().muted_text_brush() : host->GetShell().text_brush(), InsetRectCopy(screenshot_hotkey_rect, host->DipToPx(10.0f), 0), draft.screenshot_hotkey.empty() ? L"\u672a\u8bbe\u7f6e" : draft.screenshot_hotkey);
-  }
+  DrawSettingSectionTitle(target, host, cx, cy, title_node_, L"\u5feb\u6377\u952e");
+  DrawSettingPanelBox(target, host, cx, cy, card1_);
+  DrawSettingRows(target, host, cx, cy, rows);
 
   return max_scroll_y_;
 }

@@ -82,6 +82,10 @@ class FlexNode {
 
   FlexNode& Gap(YGGutter gutter, float gapLength);
 
+  // 显隐（YGDisplayNone 折叠占位；设置搜索按行过滤用）
+  FlexNode& Display(YGDisplay display);
+  YGDisplay GetDisplay() const;
+
   FlexNode& MeasureFunc(YGMeasureFunc measure_func);
   FlexNode& Context(void* context);
   void* GetContext() const;

@@ -2,6 +2,8 @@
 
 #include <shellapi.h>
 
+#include "common/AppIcon.h"
+
 namespace clipd2d::platform::win32 {
 
 NotifyIconHost::~NotifyIconHost() {
@@ -16,7 +18,7 @@ common::Status NotifyIconHost::Initialize(HWND owner, const TrayLabels& labels) 
   data_.uID = 1;
   data_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   data_.uCallbackMessage = kTrayMessage;
-  data_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  data_.hIcon = clipd2d::common::LoadAppIcon();
   wcscpy_s(data_.szTip, ARRAYSIZE(data_.szTip), L"Scraps");
 
   if (!Shell_NotifyIconW(NIM_ADD, &data_)) {

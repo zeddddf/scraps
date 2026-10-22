@@ -17,6 +17,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
+SetupIconFile=..\assets\brand\app.ico
 OutputDir=..\dist
 OutputBaseFilename=Scraps-{#MyAppVersion}-setup
 Compression=lzma2/max

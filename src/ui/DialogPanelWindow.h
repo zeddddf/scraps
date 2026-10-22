@@ -78,6 +78,7 @@ class DialogPanelWindow {
   LRESULT WindowProc(UINT message, WPARAM w_param, LPARAM l_param);
 
   common::Status InitTextBox();
+  void ApplyThemeToTextboxes();
   void LayoutWindow();
   void RenderFrame();
   void SetWindowAllowsActivation(bool allow_activation);

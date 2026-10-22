@@ -884,6 +884,8 @@ common::Status ClipRepository::SaveSettings(const AppSettings& settings) {
   if (!status.ok()) return status;
   status = save_one("window_blur_opacity", std::to_string(settings.window_blur_opacity));
   if (!status.ok()) return status;
+  status = save_one("theme", std::to_string(static_cast<int>(settings.theme)));
+  if (!status.ok()) return status;
   status = save_one("list_density", ToSettingsValue(settings.list_density));
   if (!status.ok()) return status;
   status = save_one("window_position_mode", ToSettingsValue(settings.window_position_mode));

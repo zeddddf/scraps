@@ -243,6 +243,13 @@ enum class WindowBlurType {
   Acrylic = 2,
 };
 
+// 主题模式：System 跟随系统深浅色，Light/Dark 强制指定。
+enum class ThemeMode {
+  System = 0,
+  Light = 1,
+  Dark = 2,
+};
+
 struct AppSettings {
   int history_limit = 10000;
   int history_retention_days = 30;
@@ -257,6 +264,7 @@ struct AppSettings {
   WindowPositionMode window_position_mode = WindowPositionMode::Remember;
   WindowBlurType window_blur_type = WindowBlurType::Mica;
   int window_blur_opacity = 50;
+  ThemeMode theme = ThemeMode::System;
   std::wstring hotkey = L"Ctrl+Shift+V";
   std::wstring quick_paste_hotkey = L"Alt+~";
   bool focus_search_on_open = false;

@@ -438,6 +438,11 @@ common::Status ClipRepository::LoadSettings(AppSettings* settings) const {
       try { settings->window_blur_type = static_cast<WindowBlurType>(std::stoi(value)); } catch (...) {}
     } else if (key == "window_blur_opacity") {
       try { settings->window_blur_opacity = std::stoi(value); } catch (...) {}
+    } else if (key == "theme") {
+      try {
+        const int parsed = std::stoi(value);
+        if (parsed >= 0 && parsed <= 2) settings->theme = static_cast<ThemeMode>(parsed);
+      } catch (...) {}
     } else if (key == "list_density") {
       settings->list_density = ParseListDensity(value);
     } else if (key == "hotkey") {

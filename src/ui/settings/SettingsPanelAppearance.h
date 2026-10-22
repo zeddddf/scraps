@@ -11,6 +11,7 @@ class SettingsPanelAppearance : public ISettingsPanel {
 public:
     void Layout(float /*width*/, float& /*current_y*/, const DraftState& /*draft*/, ISettingsHost* /*host*/) override {}
     float Render(ID2D1HwndRenderTarget* target, const DraftState& draft, ISettingsHost* host, const RECT& content_rect) override;
+    std::vector<SettingRow> BuildRows(const DraftState& draft, ISettingsHost* host) const override;
 
 private:
     void BuildLayout(float width, float height, ISettingsHost* host);
@@ -23,6 +24,10 @@ private:
     std::shared_ptr<FlexNode> root_;
     std::shared_ptr<FlexNode> title_node_;
     std::shared_ptr<FlexNode> card1_;
+    std::shared_ptr<FlexNode> r0_;
+    std::shared_ptr<FlexNode> r0_t_;
+    std::shared_ptr<FlexNode> r0_s_;
+    std::shared_ptr<FlexNode> r0_c_;
     std::shared_ptr<FlexNode> r1_;
     std::shared_ptr<FlexNode> r1_t_;
     std::shared_ptr<FlexNode> r1_s_;
@@ -39,6 +44,10 @@ private:
     std::shared_ptr<FlexNode> r4_t_;
     std::shared_ptr<FlexNode> r4_s_;
     std::shared_ptr<FlexNode> r4_c_;
+    std::shared_ptr<FlexNode> r5_;
+    std::shared_ptr<FlexNode> r5_t_;
+    std::shared_ptr<FlexNode> r5_s_;
+    std::shared_ptr<FlexNode> r5_c_;
 };
 
 }  // namespace clipd2d::ui

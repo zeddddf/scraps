@@ -2,7 +2,6 @@
 #include "app/StartupTrace.h"
 #include "ui/ClipVisualFileContent.h"
 #include "ui/vlist/RowHeightModel.h"
-#include "ui/vlist/RowHeightModel.h"
 
 #include <psapi.h>
 
@@ -734,7 +733,6 @@ void MainWindow::CommitStagingSnapshotIfReady() {
   for (const auto& [page_index, _] : page_cache_) {
     TouchPage(page_index);
   }
-  RebuildViewportHeights();
   RebuildViewportHeights();
   display_query_ = staging_snapshot_.query;
   display_query_tokens_ = TokenizeSearchQuery(ToWide(display_query_.search_text));

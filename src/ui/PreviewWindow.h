@@ -60,6 +60,7 @@ class PreviewWindow {
   LRESULT WindowProc(UINT message, WPARAM w_param, LPARAM l_param);
 
   common::Status CreateControls();
+  void ApplyPreviewRichEditTheme();
   void LayoutControls();
   void RenderFrame();
   void UpdateVisibleControls();

@@ -3,6 +3,8 @@
 #include <dwmapi.h>
 #include <windows.h>
 
+#include "core/store/ClipTypes.h"
+
 namespace clipd2d::ui {
 
 constexpr UINT kPopupPanelClassStyle = CS_DROPSHADOW;
@@ -10,6 +12,13 @@ constexpr DWORD kPopupPanelWindowExStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS
 constexpr DWORD kPopupPanelWindowStyle = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 constexpr COLORREF kPopupPanelNoBorderColor = 0xFFFFFFFE;
 constexpr COLORREF kPopupPanelLightBorderColor = RGB(218, 218, 218);
+constexpr COLORREF kPopupPanelDarkBorderColor = RGB(0x52, 0x52, 0x56);
+
+// C1：弹窗 DWM 描边随主题（深色用中性灰描边）。
+inline COLORREF PopupPanelBorderColor() {
+  extern bool g_dark_theme_active;  // clipd2d::ui::g_dark_theme_active（D2dShell.cpp）
+  return g_dark_theme_active ? kPopupPanelDarkBorderColor : kPopupPanelLightBorderColor;
+}
 
 inline void ApplyPopupPanelWindowChrome(HWND hwnd, COLORREF border_color = kPopupPanelNoBorderColor) {
   if (hwnd == nullptr) {
@@ -29,7 +38,36 @@ inline void ApplyPopupPanelWindowChrome(HWND hwnd, COLORREF border_color = kPopu
   DwmSetWindowAttribute(hwnd, kDwmBorderColorValue, &border_color, sizeof(border_color));
 }
 
-#include "core/store/ClipTypes.h"
+// 读取系统应用深浅色设置（HKCU\...\Themes\Personalize\AppsUseLightTheme）。
+// 读不到（旧系统/被策略禁用）时按浅色处理。
+inline bool IsSystemDarkTheme() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(
+          HKEY_CURRENT_USER,
+          L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+          0, KEY_READ, &key) != ERROR_SUCCESS) {
+    return false;
+  }
+  DWORD value = 1;
+  DWORD size = sizeof(value);
+  const LSTATUS result = RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr,
+                                          reinterpret_cast<LPBYTE>(&value), &size);
+  RegCloseKey(key);
+  return result == ERROR_SUCCESS && value == 0;
+}
+
+// DWM 暗色标题栏 / 暗色 Mica·Acrylic 底色。Win10 1809+ 用属性 20，老版本回退 19。
+inline void ApplyDarkModeAttribute(HWND hwnd, bool dark) {
+  if (hwnd == nullptr) {
+    return;
+  }
+  constexpr DWORD kDwmUseImmersiveDarkMode = 20;
+  constexpr DWORD kDwmUseImmersiveDarkModeFallback = 19;
+  BOOL value = dark ? TRUE : FALSE;
+  if (FAILED(DwmSetWindowAttribute(hwnd, kDwmUseImmersiveDarkMode, &value, sizeof(value)))) {
+    DwmSetWindowAttribute(hwnd, kDwmUseImmersiveDarkModeFallback, &value, sizeof(value));
+  }
+}
 
 inline void ApplyWindowBlur(HWND hwnd, core::store::WindowBlurType type) {
   if (hwnd == nullptr) return;

@@ -153,7 +153,7 @@ target_link_libraries(scraps_core
     runtimeobject
 )
 
-add_executable(Scraps WIN32 src/app/main.cpp)
+add_executable(Scraps WIN32 src/app/main.cpp src/app/app.rc)
 target_link_libraries(Scraps PRIVATE scraps_core)
 target_link_libraries(Scraps PRIVATE dbghelp)
 
@@ -174,7 +174,7 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/assets/fluent
     $<TARGET_FILE_DIR:Scraps>/assets/fluent
 )
-add_executable(scraps-cli src/cli/main.cpp src/cli/CliCommandParser.cpp)
+add_executable(scraps-cli src/cli/main.cpp src/cli/CliCommandParser.cpp src/app/app.rc)
 target_link_libraries(scraps-cli PRIVATE scraps_core)
 
 set(SCRAPS_SCREENSHOT_SOURCES
@@ -204,7 +204,7 @@ set(SCRAPS_SCREENSHOT_SOURCES
   src/screenshot/protocol/ScreenshotProtocol.cpp
 )
 
-add_executable(scraps_screenshot WIN32 ${SCRAPS_SCREENSHOT_SOURCES})
+add_executable(scraps_screenshot WIN32 ${SCRAPS_SCREENSHOT_SOURCES} src/app/app.rc)
 target_link_libraries(scraps_screenshot PRIVATE scraps_core)
 target_include_directories(scraps_screenshot PRIVATE src/screenshot)
 

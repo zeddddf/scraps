@@ -31,6 +31,7 @@
 #include "common/StringUtil.h"
 #include "common/Utf8.h"
 #include "ui/FluentIcons.h"
+#include "ui/PanelWindowChrome.h"
 #include "ui/GroupMenuCommand.h"
 #include "ui/GroupNameDialog.h"
 #include "ui/TagEditorDialog.h"
@@ -990,7 +991,7 @@ void DrawCachedCenteredText(
   }
   const float width = static_cast<float>(std::max(1L, rect.right - rect.left));
   const float height = static_cast<float>(std::max(1L, rect.bottom - rect.top));
-  TextLayoutCache::Key key{static_cast<std::int64_t>(std::hash<std::wstring>{}(text)), static_cast<int>(CachedTextRole::UI)};
+  TextLayoutCache::Key key{static_cast<std::uint64_t>(std::hash<std::wstring>{}(text)), static_cast<int>(CachedTextRole::UI)};
   const auto layout = cache->GetOrCreate(
       factory,
       key,

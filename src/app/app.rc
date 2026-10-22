@@ -1,0 +1,6 @@
+// Scraps 应用图标资源。路径相对本文件目录（src/app/）。
+// 注意：资源 ID 直接写数字字面量，不用 #include 宏——RC 预处理器对
+// 头文件宏展开不可靠，会导致资源组被命名为字符串 "IDI_SCRAPSAPP"
+// 而非整数 101，LoadIconW(MAKEINTRESOURCE(101)) 取不到。
+// 数值须与 src/common/resource.h 的 IDI_SCRAPSAPP 保持一致。
+101 ICON "../../assets/brand/app.ico"

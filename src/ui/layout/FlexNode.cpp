@@ -88,6 +88,10 @@ FlexNode& FlexNode::PositionType(YGPositionType type) { YGNodeStyleSetPositionTy
 
 FlexNode& FlexNode::Gap(YGGutter gutter, float gapLength) { YGNodeStyleSetGap(node_, gutter, gapLength); return *this; }
 
+FlexNode& FlexNode::Display(YGDisplay display) { YGNodeStyleSetDisplay(node_, display); return *this; }
+
+YGDisplay FlexNode::GetDisplay() const { return YGNodeStyleGetDisplay(node_); }
+
 FlexNode& FlexNode::MeasureFunc(YGMeasureFunc measure_func) { YGNodeSetMeasureFunc(node_, measure_func); return *this; }
 FlexNode& FlexNode::Context(void* context) { YGNodeSetContext(node_, context); return *this; }
 void* FlexNode::GetContext() const { return YGNodeGetContext(node_); }

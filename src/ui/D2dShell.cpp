@@ -11,6 +11,10 @@
 
 namespace clipd2d::ui {
 
+// 全局主题状态（声明见 D2dShell.h）：进程级明/暗态与纪元号。
+bool g_dark_theme_active = false;
+std::uint32_t g_theme_epoch = 1;
+
 namespace {
 
 common::Status FromHr(HRESULT hr, const char* message) {
@@ -871,6 +875,46 @@ common::Status D2dShell::CreateSecondaryTextFormats() {
   return common::Status::Ok();
 }
 
+namespace {
+
+// C1：调色板唯一权威定义。语义化取色（ColorXxx）与具名刷共用同一份。
+struct ThemePalette {
+  D2D1_COLOR_F background;
+  D2D1_COLOR_F surface;
+  D2D1_COLOR_F surface_alt;
+  D2D1_COLOR_F surface_hover;
+  D2D1_COLOR_F surface_selected;
+  D2D1_COLOR_F border;
+  D2D1_COLOR_F accent;
+  D2D1_COLOR_F accent_soft;
+  D2D1_COLOR_F text;
+  D2D1_COLOR_F muted_text;
+  D2D1_COLOR_F subtle_text;
+  D2D1_COLOR_F danger;
+  D2D1_COLOR_F success;
+  D2D1_COLOR_F white;
+};
+
+const ThemePalette kLightPalette = {
+    D2D1::ColorF(0xF3F4F6), D2D1::ColorF(0xFFFFFF), D2D1::ColorF(0xF7F9FD),
+    D2D1::ColorF(0xEFF4FF), D2D1::ColorF(0xDCE8FF), D2D1::ColorF(0xD7DFED),
+    D2D1::ColorF(0x3A7AFE), D2D1::ColorF(0xE7F0FF), D2D1::ColorF(0x23262D),
+    D2D1::ColorF(0x5E6573), D2D1::ColorF(0x8D96A6), D2D1::ColorF(0xD24A4A),
+    D2D1::ColorF(0x26A65B), D2D1::ColorF(0xFFFFFF)};
+
+const ThemePalette kDarkPalette = {
+    D2D1::ColorF(0x1C1C1E), D2D1::ColorF(0x2C2C2E), D2D1::ColorF(0x3A3A3C),
+    D2D1::ColorF(0x323234), D2D1::ColorF(0x3E3E43), D2D1::ColorF(0x38383A),
+    D2D1::ColorF(0x0A84FF), D2D1::ColorF(0x1F3350), D2D1::ColorF(0xFFFFFF),
+    D2D1::ColorF(0x98989F), D2D1::ColorF(0x636368), D2D1::ColorF(0xFF453A),
+    D2D1::ColorF(0x30D158), D2D1::ColorF(0xFFFFFF)};
+
+const ThemePalette& PaletteFor(bool dark) {
+  return dark ? kDarkPalette : kLightPalette;
+}
+
+}  // namespace
+
 common::Status D2dShell::CreateBrushes() {
   ID2D1RenderTarget* rt = active_target();
   if (rt == nullptr) {
@@ -879,24 +923,60 @@ common::Status D2dShell::CreateBrushes() {
   // Q2:动态色刷随设备资源重建失效(刷子绑定创建时的渲染目标)。
   solid_brush_cache_.clear();
 
-  HRESULT hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xF3F4F6), background_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF), surface_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xF7F9FD), surface_alt_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xEFF4FF), surface_hover_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xDCE8FF), surface_selected_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xD7DFED), border_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0x3A7AFE), accent_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xE7F0FF), accent_soft_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0x23262D), text_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0x5E6573), muted_text_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0x8D96A6), subtle_text_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xD24A4A), danger_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0x26A65B), success_brush_.ReleaseAndGetAddressOf());
-  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF), white_brush_.ReleaseAndGetAddressOf());
+  // C1 暗色模式：明/暗两套调色板，按全局主题取值。浅色保持历史值不变；
+  // 深色按 iOS 规范：中性灰阶层级（#1C1C1E → #2C2C2E → #3A3A3C）+
+  // 系统色官方暗色值（蓝 #0A84FF / 红 #FF453A / 绿 #30D158）。
+  const ThemePalette& palette = IsDarkThemeActive() ? kDarkPalette : kLightPalette;
+
+  HRESULT hr = rt->CreateSolidColorBrush(palette.background, background_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.surface, surface_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.surface_alt, surface_alt_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.surface_hover, surface_hover_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.surface_selected, surface_selected_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.border, border_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.accent, accent_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.accent_soft, accent_soft_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.text, text_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.muted_text, muted_text_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.subtle_text, subtle_text_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.danger, danger_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.success, success_brush_.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.white, white_brush_.ReleaseAndGetAddressOf());
   if (SUCCEEDED(hr)) {
+    brushes_theme_epoch_ = ThemeEpoch();
     clipd2d::app::MarkStartupPhase("d2d_brushes_ready");
   }
   return FromHr(hr, "创建 D2D 画刷失败。");
+}
+
+D2D1_COLOR_F D2dShell::ColorBackground() const { return PaletteFor(IsDarkThemeActive()).background; }
+D2D1_COLOR_F D2dShell::ColorSurface() const { return PaletteFor(IsDarkThemeActive()).surface; }
+D2D1_COLOR_F D2dShell::ColorSurfaceAlt() const { return PaletteFor(IsDarkThemeActive()).surface_alt; }
+D2D1_COLOR_F D2dShell::ColorSurfaceHover() const { return PaletteFor(IsDarkThemeActive()).surface_hover; }
+D2D1_COLOR_F D2dShell::ColorSurfaceSelected() const { return PaletteFor(IsDarkThemeActive()).surface_selected; }
+D2D1_COLOR_F D2dShell::ColorBorder() const { return PaletteFor(IsDarkThemeActive()).border; }
+D2D1_COLOR_F D2dShell::ColorAccent() const { return PaletteFor(IsDarkThemeActive()).accent; }
+D2D1_COLOR_F D2dShell::ColorAccentSoft() const { return PaletteFor(IsDarkThemeActive()).accent_soft; }
+D2D1_COLOR_F D2dShell::ColorText() const { return PaletteFor(IsDarkThemeActive()).text; }
+D2D1_COLOR_F D2dShell::ColorMutedText() const { return PaletteFor(IsDarkThemeActive()).muted_text; }
+D2D1_COLOR_F D2dShell::ColorSubtleText() const { return PaletteFor(IsDarkThemeActive()).subtle_text; }
+
+void SetDarkThemeActive(bool dark) {
+  if (g_dark_theme_active != dark) {
+    g_dark_theme_active = dark;
+    ++g_theme_epoch;
+  }
+}
+
+bool D2dShell::SyncTheme() {
+  if (active_target() == nullptr || brushes_theme_epoch_ == ThemeEpoch()) {
+    return false;
+  }
+  return CreateBrushes().ok();
+}
+
+D2D1_COLOR_F D2dShell::themed_color(const D2D1_COLOR_F& light, const D2D1_COLOR_F& dark) const {
+  return IsDarkThemeActive() ? dark : light;
 }
 
 ID2D1SolidColorBrush* D2dShell::solid_brush(ID2D1RenderTarget* target, const D2D1_COLOR_F& color) {
