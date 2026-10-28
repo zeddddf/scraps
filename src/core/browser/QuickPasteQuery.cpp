@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <vector>
 
-#include "common/ClipTextDisplay.h"
+#include "core/browser/ClipTextDisplay.h"
 #include "common/StringUtil.h"
 
 namespace clipd2d::core::browser {

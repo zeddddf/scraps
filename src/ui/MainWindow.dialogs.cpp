@@ -3,6 +3,7 @@
 // Invariants: All group/tag create/rename/delete dialogs must route through DialogPanelWindow with settings-style interaction guards.
 
 #include "ui/MainWindowInternal.h"
+#include "core/commands/ILibraryMutator.h"
 
 namespace clipd2d::ui {
 
@@ -43,10 +44,10 @@ const core::store::GroupRecord* MainWindow::FindGroupById(std::int64_t group_id)
   if (group_id <= 0) {
     return nullptr;
   }
-  const auto it = std::find_if(groups_.begin(), groups_.end(), [group_id](const core::store::GroupRecord& group) {
+  const auto it = std::find_if(state_.groups_.begin(), state_.groups_.end(), [group_id](const core::store::GroupRecord& group) {
     return group.id == group_id;
   });
-  return it != groups_.end() ? &(*it) : nullptr;
+  return it != state_.groups_.end() ? &(*it) : nullptr;
 }
 
 void MainWindow::OpenCreateGroupDialog() {
@@ -67,11 +68,11 @@ void MainWindow::OpenCreateGroupDialog() {
   auto actions = MakeDialogPanelHostActions(
       this,
       [this](const DialogPanelWindow::Result& result) {
-        if (!result.confirmed || controller_ == nullptr) {
+        if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
         std::int64_t group_id = 0;
-        const common::Status status = controller_->EnsureGroup(result.text, &group_id);
+        const common::Status status = library_mutator_->EnsureGroup(result.text, &group_id);
         if (!status.ok() || group_id <= 0) {
           RefreshStatus(L"\u65b0\u5efa\u8d44\u6599\u5939\u5931\u8d25");
           return;
@@ -106,17 +107,16 @@ void MainWindow::OpenRenameGroupDialog(std::int64_t group_id) {
   auto actions = MakeDialogPanelHostActions(
       this,
       [this, group_id](const DialogPanelWindow::Result& result) {
-        if (!result.confirmed || controller_ == nullptr) {
+        if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = controller_->RenameGroup(group_id, result.text);
+        const common::Status status = library_mutator_->RenameGroup(group_id, result.text);
         if (!status.ok()) {
           RefreshStatus(L"\u91cd\u547d\u540d\u8d44\u6599\u5939\u5931\u8d25");
           return;
         }
-        if (current_group_id_ == group_id) {
-          browser_state_.group_name = result.text;
-          current_group_name_ = result.text;
+        if (state_.current_group_id() == group_id) {
+          state_.browser_state_.group_name = result.text;
         }
         RefreshGroups();
         RefreshStatus(L"\u5df2\u91cd\u547d\u540d\u8d44\u6599\u5939");
@@ -146,17 +146,17 @@ void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_aft
   auto actions = MakeDialogPanelHostActions(
       this,
       [this, clip_id, apply_filter_after_create](const DialogPanelWindow::Result& result) {
-        if (!result.confirmed || controller_ == nullptr) {
+        if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
         std::int64_t tag_id = 0;
-        common::Status status = controller_->EnsureTag(result.text, result.color, &tag_id);
+        common::Status status = library_mutator_->EnsureTag(result.text, result.color, &tag_id);
         if (!status.ok() || tag_id <= 0) {
           RefreshStatus(L"\u65b0\u5efa\u6807\u7b7e\u5931\u8d25");
           return;
         }
         if (clip_id > 0) {
-          status = controller_->AddTag(clip_id, tag_id);
+          status = library_mutator_->AddTag(clip_id, tag_id);
           if (!status.ok()) {
             RefreshStatus(L"\u6dfb\u52a0\u6807\u7b7e\u5931\u8d25");
             return;
@@ -176,10 +176,10 @@ void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_aft
 }
 
 void MainWindow::OpenRenameTagDialog(std::int64_t tag_id) {
-  const auto it = std::find_if(tags_.begin(), tags_.end(), [tag_id](const core::store::TagRecord& tag) {
+  const auto it = std::find_if(state_.tags_.begin(), state_.tags_.end(), [tag_id](const core::store::TagRecord& tag) {
     return tag.id == tag_id;
   });
-  if (it == tags_.end()) {
+  if (it == state_.tags_.end()) {
     return;
   }
   if (!EnsureDialogPanelWindowCreated().ok()) {
@@ -203,10 +203,10 @@ void MainWindow::OpenRenameTagDialog(std::int64_t tag_id) {
   auto actions = MakeDialogPanelHostActions(
       this,
       [this, tag_id](const DialogPanelWindow::Result& result) {
-        if (!result.confirmed || controller_ == nullptr) {
+        if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = controller_->RenameTag(tag_id, result.text, result.color);
+        const common::Status status = library_mutator_->RenameTag(tag_id, result.text, result.color);
         if (!status.ok()) {
           RefreshStatus(L"Rename tag failed");
           return;
@@ -241,15 +241,15 @@ void MainWindow::OpenDeleteGroupDialog(std::int64_t group_id) {
   auto actions = MakeDialogPanelHostActions(
       this,
       [this, group_id](const DialogPanelWindow::Result& result) {
-        if (!result.confirmed || controller_ == nullptr) {
+        if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = controller_->DeleteGroup(group_id);
+        const common::Status status = library_mutator_->DeleteGroup(group_id);
         if (!status.ok()) {
           RefreshStatus(L"\u5220\u9664\u8d44\u6599\u5939\u5931\u8d25");
           return;
         }
-        if (current_group_id_ == group_id) {
+        if (state_.current_group_id() == group_id) {
           ApplyBrowserCommand(core::browser::BrowserCommand{core::browser::BrowserCommandKind::SetScopeLibrary});
         }
         RefreshGroups();
@@ -260,10 +260,10 @@ void MainWindow::OpenDeleteGroupDialog(std::int64_t group_id) {
 }
 
 void MainWindow::OpenDeleteTagDialog(std::int64_t tag_id) {
-  const auto it = std::find_if(tags_.begin(), tags_.end(), [tag_id](const core::store::TagRecord& tag) {
+  const auto it = std::find_if(state_.tags_.begin(), state_.tags_.end(), [tag_id](const core::store::TagRecord& tag) {
     return tag.id == tag_id;
   });
-  if (it == tags_.end()) {
+  if (it == state_.tags_.end()) {
     return;
   }
   if (!EnsureDialogPanelWindowCreated().ok()) {
@@ -280,10 +280,10 @@ void MainWindow::OpenDeleteTagDialog(std::int64_t tag_id) {
   auto actions = MakeDialogPanelHostActions(
       this,
       [this, tag_id](const DialogPanelWindow::Result& result) {
-        if (!result.confirmed || controller_ == nullptr) {
+        if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = controller_->DeleteTag(tag_id);
+        const common::Status status = library_mutator_->DeleteTag(tag_id);
         if (!status.ok()) {
           RefreshStatus(L"\u5220\u9664\u6807\u7b7e\u5931\u8d25");
           return;
@@ -316,10 +316,10 @@ bool MainWindow::MoveClipToGroupById(
     std::int64_t clip_id,
     std::int64_t group_id,
     const std::wstring& success_status) {
-  if (controller_ == nullptr || clip_id <= 0 || group_id <= 0) {
+  if (library_mutator_ == nullptr || clip_id <= 0 || group_id <= 0) {
     return false;
   }
-  if (!controller_->MoveClipsToGroup({clip_id}, group_id).ok()) {
+  if (!library_mutator_->MoveClipsToGroup({clip_id}, group_id).ok()) {
     return false;
   }
   RefreshStatus(success_status);
@@ -328,10 +328,10 @@ bool MainWindow::MoveClipToGroupById(
 }
 
 bool MainWindow::MoveClipToGroupByIndex(std::int64_t clip_id, size_t group_index) {
-  if (group_index >= groups_.size()) {
+  if (group_index >= state_.groups_.size()) {
     return false;
   }
-  return MoveClipToGroupById(clip_id, groups_[group_index].id, L"\u5df2\u79fb\u52a8\u5230\u8d44\u6599\u5939");
+  return MoveClipToGroupById(clip_id, state_.groups_[group_index].id, L"\u5df2\u79fb\u52a8\u5230\u8d44\u6599\u5939");
 }
 
 bool MainWindow::CreateGroupAndMoveClip(std::int64_t clip_id) {
@@ -352,11 +352,11 @@ bool MainWindow::CreateGroupAndMoveClip(std::int64_t clip_id) {
   auto actions = MakeDialogPanelHostActions(
       this,
       [this, clip_id](const DialogPanelWindow::Result& result) {
-        if (!result.confirmed || controller_ == nullptr) {
+        if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
         std::int64_t group_id = 0;
-        const common::Status status = controller_->EnsureGroup(result.text, &group_id);
+        const common::Status status = library_mutator_->EnsureGroup(result.text, &group_id);
         if (!status.ok() || group_id <= 0) {
           RefreshStatus(L"\u65b0\u5efa\u8d44\u6599\u5939\u5931\u8d25");
           return;
@@ -374,17 +374,17 @@ bool MainWindow::PromptCreateTag(std::int64_t clip_id, bool apply_filter_after_c
 }
 
 void MainWindow::RenameCurrentTag() {
-  if (controller_ == nullptr || current_tag_id_ <= 0) {
+  if (library_mutator_ == nullptr || state_.current_tag_id() <= 0) {
     return;
   }
-  OpenRenameTagDialog(current_tag_id_);
+  OpenRenameTagDialog(state_.current_tag_id());
 }
 
 void MainWindow::DeleteCurrentTag() {
-  if (controller_ == nullptr || current_tag_id_ <= 0) {
+  if (library_mutator_ == nullptr || state_.current_tag_id() <= 0) {
     return;
   }
-  OpenDeleteTagDialog(current_tag_id_);
+  OpenDeleteTagDialog(state_.current_tag_id());
 }
 
 }  // namespace clipd2d::ui

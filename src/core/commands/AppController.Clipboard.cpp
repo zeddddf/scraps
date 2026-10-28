@@ -12,7 +12,8 @@ AppController::~AppController() {
 
 common::Status AppController::Initialize(const common::AppPaths& paths) {
   std::scoped_lock lock(mutex_);
-  if (clipboard_worker_.joinable() || ingest_worker_.joinable() || ocr_worker_.joinable() || backup_worker_.joinable()) {
+  if (clipboard_worker_.joinable() || paste_worker_.joinable() || ingest_worker_.joinable() ||
+      ocr_worker_.joinable() || backup_worker_.joinable()) {
     return common::Status::Ok();
   }
   paths_ = paths;
@@ -24,9 +25,14 @@ common::Status AppController::Initialize(const common::AppPaths& paths) {
   if (!status.ok()) {
     return status;
   }
+  PublishSettingsCacheLocked();
   shutting_down_ = false;
+  paste_queue_.Reset();  // 与 shutting_down_ 同步开闸（Initialize 再启动路径）
   clipboard_worker_ = std::thread([this]() {
     ClipboardWorkerLoop();
+  });
+  paste_worker_ = std::thread([this]() {
+    PasteWorkerLoop();
   });
   ingest_worker_ = std::thread([this]() {
     IngestWorkerLoop();
@@ -47,6 +53,8 @@ void AppController::Shutdown() {
     pending_clipboard_events_.clear();
     pending_arrival_reason_.reset();
     pending_arrival_sequence_ = 0;
+    paste_queue_.Close();   // 对应 shutting_down_：拒新
+    paste_queue_.Clear();   // 丢弃未执行请求（与旧 pending_paste_requests_.clear() 同语义）
     pending_image_ingests_.clear();
     active_image_ingests_.clear();
     pending_ocr_jobs_.clear();
@@ -55,11 +63,15 @@ void AppController::Shutdown() {
     in_flight_clipboard_sequence_ = 0;
   }
   clipboard_worker_cv_.notify_all();
+  paste_worker_cv_.notify_all();
   ingest_worker_cv_.notify_all();
   ocr_worker_cv_.notify_all();
   backup_worker_cv_.notify_all();
   if (clipboard_worker_.joinable()) {
     clipboard_worker_.join();
+  }
+  if (paste_worker_.joinable()) {
+    paste_worker_.join();
   }
   if (ingest_worker_.joinable()) {
     ingest_worker_.join();
@@ -95,16 +107,15 @@ std::optional<AppController::PendingClipboardEvent> AppController::TakeNextPendi
   return std::nullopt;
 }
 
-store::ReuseTouchPolicy AppController::ConsumeClipboardTouchPolicy(DWORD sequence) {
+store::ReuseTouchPolicy AppController::ConsumeClipboardTouchPolicy(DWORD sequence, bool internal_writeback) {
   bool should_clear_state = false;
   const store::ReuseTouchPolicy policy = detail::ResolveClipboardTouchPolicy(
       pending_arrival_reason_,
-      pending_arrival_sequence_,
-      sequence,
+      internal_writeback,
       settings_.promote_pasted_clip_on_reuse,
       &should_clear_state);
   if (should_clear_state) {
-    if (pending_arrival_reason_.has_value() && pending_arrival_sequence_ != 0 && sequence != pending_arrival_sequence_) {
+    if (pending_arrival_reason_.has_value() && pending_arrival_sequence_ != 0 && !internal_writeback) {
       common::WriteLog(
           common::LogLevel::Info,
           "clipboard.sequence",
@@ -113,6 +124,7 @@ store::ReuseTouchPolicy AppController::ConsumeClipboardTouchPolicy(DWORD sequenc
     }
     pending_arrival_reason_.reset();
     pending_arrival_sequence_ = 0;
+    internal_writeback_baseline_sequence_ = 0;
   }
   if (policy == store::ReuseTouchPolicy::KeepPositionOnReuse) {
     common::WriteLog(
@@ -221,7 +233,9 @@ common::Status AppController::OnClipboardChanged(HWND source_window, DWORD seque
         sequence != 0 &&
         pending_arrival_reason_.has_value() &&
         pending_arrival_sequence_ != 0 &&
-        sequence == pending_arrival_sequence_;
+        internal_writeback_baseline_sequence_ != 0 &&
+        sequence > internal_writeback_baseline_sequence_ &&
+        sequence <= pending_arrival_sequence_;
     if (shutting_down_ || !settings_.monitoring_enabled ||
         (IsSuppressedClipboardUpdate() && !matches_pending_internal_writeback)) {
       return common::Status::Ok();
@@ -239,7 +253,8 @@ common::Status AppController::OnClipboardChanged(HWND source_window, DWORD seque
       if (already_pending || sequence == in_flight_clipboard_sequence_) {
         return common::Status::Ok();
       }
-      pending_clipboard_events_.push_back(PendingClipboardEvent{sequence, source_window, 0, 0});
+      pending_clipboard_events_.push_back(PendingClipboardEvent{
+          sequence, source_window, 0, 0, matches_pending_internal_writeback});
       common::WriteLog(
           common::LogLevel::Info,
           "clipboard.sequence",
@@ -257,6 +272,7 @@ void AppController::RunClipboardCaptureLoop() {
     DWORD current_sequence = 0;
     HWND current_source_window = nullptr;
     int current_deferred_attempt = 0;
+    bool current_internal_writeback = false;
     store::AppSettings settings_snapshot;
     {
       std::unique_lock lock(mutex_);
@@ -269,6 +285,7 @@ void AppController::RunClipboardCaptureLoop() {
       current_sequence = next_event->sequence;
       current_source_window = next_event->source_window;
       current_deferred_attempt = next_event->deferred_attempt;
+      current_internal_writeback = next_event->internal_writeback;
       in_flight_clipboard_sequence_ = current_sequence;
       clipboard_capture_in_flight_ = true;
       settings_snapshot = settings_;
@@ -289,8 +306,7 @@ void AppController::RunClipboardCaptureLoop() {
       std::scoped_lock lock(mutex_);
       if (detail::ShouldSkipClipboardCapture(
               pending_arrival_reason_,
-              pending_arrival_sequence_,
-              current_sequence)) {
+              current_internal_writeback)) {
         pending_arrival_reason_.reset();
         pending_arrival_sequence_ = 0;
         skip_internal_sticker_capture = true;
@@ -347,11 +363,71 @@ void AppController::RunClipboardCaptureLoop() {
                 " attempt=" + std::to_string(attempt + 1) +
                 " success " + BuildClipDebugSummary(clip));
 
+        // 1x1/2x2 这类图片是垃圾条目：没有任何可用内容，却会占一个历史位置，
+        // 而且和正常图片混在一起让"粘贴后列表变了"更难判断。它们多由后台进程写入，
+        // 前台窗口归属（source_app）会指错，所以这里直接问剪贴板当前的**所有者窗口**。
+        if (clip.content_type == store::ClipContentType::Image &&
+            clip.image_width <= 2 && clip.image_height <= 2) {
+          const HWND clipboard_owner = GetClipboardOwner();
+          const std::wstring owner_process =
+              clipboard_owner != nullptr ? clipboard::GetWindowProcessNameLower(clipboard_owner) : std::wstring();
+          common::WriteLog(
+              common::LogLevel::Warning,
+              "clipboard.capture.tiny_image",
+              "sequence=" + std::to_string(current_sequence) +
+                  " size=" + std::to_string(clip.image_width) + "x" + std::to_string(clip.image_height) +
+                  " hash=" + clip.content_hash.substr(0, std::min<size_t>(clip.content_hash.size(), 12)) +
+                  " owner_process=" + common::WideToUtf8(owner_process).utf8 +
+                  " foreground_source=" + common::WideToUtf8(clip.source_app.process_name).utf8 +
+                  " window=" + common::WideToUtf8(clip.source_app.window_title).utf8);
+        }
+
         bool blocked_by_filter = false;
         {
           std::scoped_lock lock(mutex_);
           blocked_by_filter = shutting_down_ || IsBlockedByFilter(clip);
-          touch_policy = ConsumeClipboardTouchPolicy(current_sequence);
+          // 身份兜底：序列窗口判定会被「派生格式合成」击穿——写回 PNG+DIB+DIBV5 后，
+          // 目标应用（或我们自己）第一次打开剪贴板时 Windows 会惰性合成派生格式，
+          // 每次合成推进一个 sequence。实测图片写回一次推进 7 个，事件到达时
+          // sequence 已越过登记的 final（日志 arrival-sequence expired
+          // expected=23013 actual=23018），于是写回被当成外部复制 → PromoteOnReuse
+          // → MakeJumpToTopRefreshRequest，条目跳到首位。
+          // 内容身份（图片按归一化像素算）跨格式稳定，用它把漏判补回来。
+          if (!current_internal_writeback &&
+              pending_arrival_reason_.has_value() &&
+              detail::MatchesInternalWritebackIdentity(
+                  clip.identity_key,
+                  last_internal_writeback_identity_key_,
+                  GetTickCount64() - last_internal_writeback_tick_ms_,
+                  kInternalWritebackEchoWindowMs)) {
+            current_internal_writeback = true;
+            common::WriteLog(
+                common::LogLevel::Info,
+                "clipboard.sequence",
+                "writeback identity matched (sequence window missed) sequence=" +
+                    std::to_string(current_sequence) +
+                    " identity_key=" + clip.identity_key +
+                    " age_ms=" + std::to_string(GetTickCount64() - last_internal_writeback_tick_ms_));
+          }
+          touch_policy = ConsumeClipboardTouchPolicy(current_sequence, current_internal_writeback);
+          // 回声吸收：内部写回后短时间内同 identity_key 的再捕获（第三方剪贴板
+          // 增强——如 PixPin——接力改写剪贴板所致）不提升位置，视为写回的回声。
+          // 与上面的兜底的区别：这里不要求 pending_arrival_reason_ 仍在（窗口可能
+          // 已被前一个事件消费掉）。
+          if (!current_internal_writeback &&
+              touch_policy == store::ReuseTouchPolicy::PromoteOnReuse &&
+              detail::MatchesInternalWritebackIdentity(
+                  clip.identity_key,
+                  last_internal_writeback_identity_key_,
+                  GetTickCount64() - last_internal_writeback_tick_ms_,
+                  kInternalWritebackEchoWindowMs)) {
+            touch_policy = store::ReuseTouchPolicy::KeepPositionOnReuse;
+            common::WriteLog(
+                common::LogLevel::Info,
+                "clipboard.sequence",
+                "echo absorbed identity_key=" + clip.identity_key +
+                    " age_ms=" + std::to_string(GetTickCount64() - last_internal_writeback_tick_ms_));
+          }
         }
         refresh_request = detail::BuildClipboardRefreshRequest(
             touch_policy,
@@ -398,7 +474,8 @@ void AppController::RunClipboardCaptureLoop() {
               current_sequence,
               current_source_window,
               current_deferred_attempt + 1,
-              GetTickCount64() + static_cast<std::uint64_t>(*delay_ms)});
+              GetTickCount64() + static_cast<std::uint64_t>(*delay_ms),
+              current_internal_writeback});
           deferred_requeued = true;
         }
       }

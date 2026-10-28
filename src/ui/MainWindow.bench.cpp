@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "core/commands/ISettingsStore.h"
 
 namespace clipd2d::ui {
 namespace {
@@ -213,7 +214,7 @@ void MainWindow::RunScrollBenchmark() {
   const ULONGLONG data_deadline = GetTickCount64() + 10000;
   while (GetTickCount64() < data_deadline) {
     PumpMessages(50);
-    if (item_count_ > 0 && !page_cache_.empty() && display_generation_ != 0) {
+    if (state_.item_count_ > 0 && !state_.page_cache_.empty() && state_.display_generation_ != 0) {
       break;
     }
   }
@@ -231,7 +232,7 @@ void MainWindow::RunScrollBenchmark() {
   report += "生成时间: " + std::to_string(GetTickCount64() / 1000) + "s (tick64)  进程: " +
       std::to_string(GetCurrentProcessId()) + "\n\n";
 
-  if (item_count_ <= 0) {
+  if (state_.item_count_ <= 0) {
     report += "**无数据：等待列表加载超时，跳过测量。**\n";
     const std::wstring dir = ResolveReportDir();
     const std::wstring path = dir + L"\\scroll_bench_" + std::wstring(tag.begin(), tag.end()) + L".md";
@@ -247,15 +248,15 @@ void MainWindow::RunScrollBenchmark() {
   int measured_max = 0;
   long long measured_sum = 0;
   int measured_count = 0;
-  for (int page = 0; page * page_size_ < item_count_; ++page) {
-    auto it = page_cache_.find(page);
-    if (it == page_cache_.end()) {
+  for (int page = 0; page * state_.page_size_ < state_.item_count_; ++page) {
+    auto it = state_.page_cache_.find(page);
+    if (it == state_.page_cache_.end()) {
       continue;
     }
     for (size_t off = 0; off < it->second.size(); ++off) {
       const bool compact =
-          controller_ != nullptr &&
-          controller_->current_settings().list_density == core::store::ListDensity::Compact;
+          settings_store_ != nullptr &&
+          settings_store_->current_settings().list_density == core::store::ListDensity::Compact;
       const int h = vlist::RowHeightModel::Measure(it->second[off], content_w, compact);
       measured_min = std::min(measured_min, h);
       measured_max = std::max(measured_max, h);
@@ -264,10 +265,10 @@ void MainWindow::RunScrollBenchmark() {
     }
   }
   const int total_height = viewport_.TotalHeight();
-  const int fixed_estimate = item_count_ * GetItemHeight();
+  const int fixed_estimate = state_.item_count_ * GetItemHeight();
 
   report += "## 数据与高度模型\n\n";
-  report += "- 条目数: " + std::to_string(item_count_) + "\n";
+  report += "- 条目数: " + std::to_string(state_.item_count_) + "\n";
   report += "- vlist TotalHeight: " + std::to_string(total_height) + " px\n";
   report += "- 固定行高估算 (N * GetItemHeight=" + std::to_string(GetItemHeight()) + "): " +
       std::to_string(fixed_estimate) + " px  (偏差 " +
@@ -300,7 +301,7 @@ void MainWindow::RunScrollBenchmark() {
     const vlist::VisibleRange vis = viewport_.RangeAt(scroll, viewport_h, 0, 0);
     out->visible_rows = 0;
     out->skeleton_rows = 0;
-    for (int i = std::max(0, vis.first); i <= std::min(item_count_ - 1, vis.last); ++i) {
+    for (int i = std::max(0, vis.first); i <= std::min(state_.item_count_ - 1, vis.last); ++i) {
       ++out->visible_rows;
       if (GetSummaryAt(i) == nullptr) {
         ++out->skeleton_rows;
@@ -309,7 +310,7 @@ void MainWindow::RunScrollBenchmark() {
     int first_req = 0;
     int last_req = -1;
     ComputeRequestRange(
-        item_count_,
+        state_.item_count_,
         GetItemHeight(),
         viewport_h,
         scroll_controller_->CurrentScrollOffset(),
@@ -319,7 +320,7 @@ void MainWindow::RunScrollBenchmark() {
         &last_req,
         &viewport_.heights());
     const int uncovered_first = first_req - std::max(0, vis.first);
-    const int uncovered_last = std::min(item_count_ - 1, vis.last) - last_req;
+    const int uncovered_last = std::min(state_.item_count_ - 1, vis.last) - last_req;
     out->range_miss_rows = std::max(0, std::max(uncovered_first, uncovered_last));
     out->range_miss = out->range_miss_rows > 0;
   };
@@ -402,12 +403,12 @@ void MainWindow::RunScrollBenchmark() {
   };
   std::vector<ColdJump> cold_jumps;
   {
-    auto saved_cache = page_cache_;
-    auto saved_ticks = page_access_ticks_;
-    for (auto it = page_cache_.begin(); it != page_cache_.end();) {
+    auto saved_cache = state_.page_cache_;
+    auto saved_ticks = state_.page_access_ticks_;
+    for (auto it = state_.page_cache_.begin(); it != state_.page_cache_.end();) {
       if (it->first != 0) {
-        page_access_ticks_.erase(it->first);
-        it = page_cache_.erase(it);
+        state_.page_access_ticks_.erase(it->first);
+        it = state_.page_cache_.erase(it);
       } else {
         ++it;
       }
@@ -432,8 +433,8 @@ void MainWindow::RunScrollBenchmark() {
       cold_jumps.push_back(result);
       PumpMessages(16);
     }
-    page_cache_ = std::move(saved_cache);
-    page_access_ticks_ = std::move(saved_ticks);
+    state_.page_cache_ = std::move(saved_cache);
+    state_.page_access_ticks_ = std::move(saved_ticks);
   }
 
   // ---- Emit report --------------------------------------------------------

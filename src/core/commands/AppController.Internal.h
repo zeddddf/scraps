@@ -15,6 +15,7 @@
 
 #include "common/ClipboardSuppression.h"
 #include "common/Log.h"
+#include "common/Stopwatch.h"
 #include "common/StringUtil.h"
 #include "common/Utf8.h"
 #include "core/clipboard/ClipboardCapture.h"
@@ -126,6 +127,11 @@ bool IsImageStickerCandidate(const store::ClipRecord& clip) {
 std::string BuildClipDebugSummary(const store::CapturedClip& clip) {
   std::string summary = "type=" + std::string(store::ToSqlContentType(clip.content_type));
   summary += " title=" + common::JsonEscape(clip.title);
+  // 来源应用：图片类问题（1x1 垃圾条目、写回被当成外部复制）都需要知道"这是谁写的"，
+  // 否则只能靠猜。
+  if (!clip.source_app.process_name.empty()) {
+    summary += " source=" + common::JsonEscape(common::WideToUtf8(clip.source_app.process_name).utf8);
+  }
   if (!clip.plain_text.empty()) {
     const std::string snippet = clip.plain_text.substr(0, std::min<size_t>(clip.plain_text.size(), 32));
     summary += " text=" + common::JsonEscape(snippet);
@@ -170,49 +176,58 @@ inline std::optional<DWORD> DeferredClipboardRetryDelayMs(int deferred_attempt) 
 
 inline bool ShouldSkipClipboardCapture(
     std::optional<store::ClipArrivalReason> reason,
-    DWORD expected_sequence,
-    DWORD actual_sequence) {
+    bool internal_writeback) {
   return reason.has_value() &&
       *reason == store::ClipArrivalReason::InternalStickerWriteback &&
-      expected_sequence != 0 &&
-      actual_sequence == expected_sequence;
+      internal_writeback;
 }
 
+// 触摸策略判定（批次：剪贴板回声修复 3028baa 后重做）。
+// internal_writeback 由入队时按 [baseline, final] 区间判定并随事件携带——
+// 写回会话内 EmptyClipboard 与 CF_DIB 派生格式合成都会推进 sequence（单次写回可 +4），
+// 任何「事件 sequence == armed 最终值」的相等判定都会被第一个事件击穿。
 inline store::ReuseTouchPolicy ResolveClipboardTouchPolicy(
     std::optional<store::ClipArrivalReason> reason,
-    DWORD expected_sequence,
-    DWORD actual_sequence,
+    bool internal_writeback,
     bool promote_internal_paste_on_reuse,
     bool* should_clear_state) {
   if (should_clear_state != nullptr) {
     *should_clear_state = false;
   }
-  if (!reason.has_value() || expected_sequence == 0) {
+  if (internal_writeback && reason.has_value()) {
     if (should_clear_state != nullptr) {
       *should_clear_state = true;
     }
-    return store::ReuseTouchPolicy::PromoteOnReuse;
-  }
-  if (actual_sequence != expected_sequence) {
-    if (actual_sequence > expected_sequence && should_clear_state != nullptr) {
-      *should_clear_state = true;
+    switch (*reason) {
+      case store::ClipArrivalReason::InternalStickerWriteback:
+        return store::ReuseTouchPolicy::KeepPositionOnReuse;
+      case store::ClipArrivalReason::InternalClipboardWriteback:
+        return promote_internal_paste_on_reuse
+            ? store::ReuseTouchPolicy::PromoteOnReuse
+            : store::ReuseTouchPolicy::KeepPositionOnReuse;
     }
-    return store::ReuseTouchPolicy::PromoteOnReuse;
   }
   if (should_clear_state != nullptr) {
     *should_clear_state = true;
   }
-  switch (*reason) {
-    case store::ClipArrivalReason::InternalStickerWriteback:
-      return store::ReuseTouchPolicy::KeepPositionOnReuse;
-    case store::ClipArrivalReason::InternalClipboardWriteback:
-      return promote_internal_paste_on_reuse
-          ? store::ReuseTouchPolicy::PromoteOnReuse
-          : store::ReuseTouchPolicy::KeepPositionOnReuse;
-    case store::ClipArrivalReason::ExternalCapture:
-    default:
-      return store::ReuseTouchPolicy::PromoteOnReuse;
+  return store::ReuseTouchPolicy::PromoteOnReuse;
+}
+
+// 内容身份判定：这次捕获是不是「刚刚那次内部写回」的回声。
+// 为什么要它：写回判定原本只看 sequence 窗口 [baseline, final]，但图片写回会写
+// PNG+DIB+DIBV5，目标应用首次打开剪贴板时 Windows 惰性合成派生格式，每个合成
+// 推进一个 sequence。实测一次写回推进 7 个，事件到达时 sequence 已越过 final
+// （日志 arrival-sequence expired expected=23013 actual=23018），写回被当成外部
+// 复制 → PromoteOnReuse → 跳顶。图片身份按归一化像素计算、跨格式稳定，用它兜底。
+inline bool MatchesInternalWritebackIdentity(
+    std::string_view clip_identity_key,
+    std::string_view last_writeback_identity_key,
+    std::uint64_t age_ms,
+    std::uint64_t window_ms) {
+  if (last_writeback_identity_key.empty() || clip_identity_key.empty()) {
+    return false;
   }
+  return clip_identity_key == last_writeback_identity_key && age_ms < window_ms;
 }
 
 inline RefreshRequest BuildClipboardRefreshRequest(

@@ -45,6 +45,19 @@ std::string BuildTimestamp() {
 
 std::wstring ResolveLogPath() {
   std::array<wchar_t, 32767> buffer{};
+
+  // 允许重定向日志目录。测试进程必须用它把自己的日志写到临时目录：否则
+  // scraps_tests.exe 在临时库里"故意制造损坏"的用例会把 "file is not a database"
+  // 混进生产日志——曾据此误判「数据库一天损坏 185 次、自愈反复回退导致条目跳顶」，
+  // 实际每一条都来自测试。日志分析的可信度取决于它只记录真实运行。
+  const DWORD override_length =
+      GetEnvironmentVariableW(L"SCRAPS_LOG_DIR", buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (override_length > 0 && override_length < buffer.size()) {
+    std::wstring override_directory(buffer.data(), override_length);
+    CreateDirectoryW(override_directory.c_str(), nullptr);
+    return override_directory + L"\\debug.log";
+  }
+
   const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
 
   std::wstring base_directory;

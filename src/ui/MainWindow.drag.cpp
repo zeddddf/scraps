@@ -262,8 +262,8 @@ void MainWindow::BeginRowDragSession() {
   }
 
   RowDragSession session;
-  session.ordered_indexes.reserve(item_count_);
-  for (int index = 0; index < item_count_; ++index) {
+  session.ordered_indexes.reserve(state_.item_count_);
+  for (int index = 0; index < state_.item_count_; ++index) {
     const auto* summary = GetSummaryAt(index);
     if (summary != nullptr && CanReorderRow(*summary)) {
       if (index == row_drag_item_index_) {

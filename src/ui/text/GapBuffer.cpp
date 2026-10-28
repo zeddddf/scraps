@@ -1,4 +1,4 @@
-#include "text/GapBuffer.h"
+#include "ui/text/GapBuffer.h"
 #include <algorithm>
 #include <stdexcept>
 

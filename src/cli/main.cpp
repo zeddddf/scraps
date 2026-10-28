@@ -12,7 +12,7 @@
 #include "core/backup/BackupService.h"
 #include "ipc/NamedPipeClient.h"
 #include "ipc/NamedPipeProtocol.h"
-#include "ui/MainWindow.h"
+#include "ui/WindowContract.h"
 
 namespace {
 
@@ -36,12 +36,12 @@ std::wstring ResolveSiblingPath(const wchar_t* file_name) {
 }
 
 bool TryActivateExistingWindow() {
-  HWND hwnd = FindWindowW(clipd2d::ui::MainWindow::WindowClassName(), nullptr);
+  HWND hwnd = FindWindowW(clipd2d::ui::contract::kMainWindowClassName, nullptr);
   if (hwnd == nullptr) {
     return false;
   }
 
-  PostMessageW(hwnd, clipd2d::ui::MainWindow::ShowWindowMessageId(), 0, 0);
+  PostMessageW(hwnd, clipd2d::ui::contract::kShowWindowMessage, 0, 0);
   return true;
 }
 

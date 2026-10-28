@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "common/ClipTextDisplay.h"
+#include "core/browser/ClipTextDisplay.h"
 #include "common/Utf8.h"
 #include "core/browser/QuickPasteQuery.h"
 #include "platform/win32/HotkeySpec.h"

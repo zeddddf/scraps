@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 #include <functional>
-#include "text/GapBuffer.h"
+#include "ui/text/GapBuffer.h"
 
 /**
  * @brief 工业级无窗口 Direct2D + DirectWrite 文本输入框组件

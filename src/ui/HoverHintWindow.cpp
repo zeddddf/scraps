@@ -63,6 +63,7 @@ void HoverHintWindow::Destroy() {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
+  visible_ = false;
 }
 
 common::Status HoverHintWindow::EnsureDeviceIndependentResources() {
@@ -320,11 +321,14 @@ void HoverHintWindow::ShowText(std::wstring text, POINT screen_anchor) {
   }
   (void)PresentLayered(width, height);
   ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  visible_ = true;
 }
 
 void HoverHintWindow::Hide() {
-  if (hwnd_ != nullptr) {
+  // 已隐藏就不再调 ShowWindow：这是鼠标移动热路径上的固定开销。
+  if (hwnd_ != nullptr && visible_) {
     ShowWindow(hwnd_, SW_HIDE);
+    visible_ = false;
   }
 }
 

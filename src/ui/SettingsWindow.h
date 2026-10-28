@@ -15,6 +15,8 @@
 #include "ui/D2dShell.h"
 #include "ui/D2DWindowlessTextBox.h"
 #include "ui/HoverHintWindow.h"
+#include "ui/settings/SettingsDraftState.h"
+#include "ui/settings/SettingsSearchController.h"
 #include "ui/settings/SettingsTypes.h"
 #include "ui/settings/ISettingsHost.h"
 #include "ui/settings/ISettingsPanel.h"
@@ -101,13 +103,27 @@ class SettingsWindow : public ISettingsHost {
   void ScrollFocusIntoView();
   void ActivateKeyboardFocus(UINT virtual_key);
 
-  void LoadDraftFromSettings(const core::store::AppSettings& settings);
-  core::store::AppSettings BuildSettingsFromDraft() const;
-  bool ValidateDraft(std::wstring* error_message) const;
+  // 草稿域规则已迁 SettingsDraftState（业务核抽取计划 §2）；以下为一行转发，
+  // 保持壳内调用点与面板 BuildRows/Render 契约零改动。
+  void LoadDraftFromSettings(const core::store::AppSettings& settings) {
+    draft_state_.LoadFrom(settings);
+  }
+  core::store::AppSettings BuildSettingsFromDraft() const {
+    return draft_state_.BuildSettings(current_settings_);
+  }
+  bool ValidateDraft(std::wstring* error_message) const {
+    return draft_state_.Validate(error_message);
+  }
   // 分节脏检查：导航脏点与保存按钮态都基于它；IsDraftDirty = 任意节脏。
-  bool IsSectionDirty(Section section, const core::store::AppSettings& next) const;
-  unsigned ComputeDirtyMask() const;
-  bool IsDraftDirty() const;
+  bool IsSectionDirty(Section section, const core::store::AppSettings& next) const {
+    return draft_state_.IsSectionDirty(section, next, current_settings_);
+  }
+  unsigned ComputeDirtyMask() const {
+    return draft_state_.ComputeDirtyMask(current_settings_);
+  }
+  bool IsDraftDirty() const {
+    return draft_state_.IsDirty(current_settings_);
+  }
   void ResetSectionToDefaults(Section section);
   void RefreshStats();
   void SetStatus(std::wstring text, bool error);
@@ -116,17 +132,10 @@ class SettingsWindow : public ISettingsHost {
   // ── 跨节搜索（A1/B5）──────────────────────────────────────────────
   // 行级索引：遍历 7 个面板的 BuildRows，按 title/subtitle 匹配，
   // 结果列表带节标签，↑↓ 选择、Enter 跳转；输入时自动预览首个命中。
-  struct SearchHit {
-    Section section = Section::General;
-    std::wstring title;
-    std::wstring subtitle;
-    HitKind hit_kind = HitKind::Toggle;
-    FieldId field_id = FieldId::None;
-    SelectField select_field = SelectField::None;
-    int hit_option = 0;
-  };
+  // 决策逻辑已迁 SettingsSearchController（业务核抽取计划 §3）；本壳只做
+  // 行收集（BuildRows）/ 跳转应用（selected_section_/pending_scroll_*）/ 绘制。
+  using SearchHit = SettingsSearchHit;
 
-  void UpdateSearchSelection();
   void RebuildSearchHits();
   void PreviewSearchHit(int index);
   void ActivateSearchHit(int index);
@@ -170,7 +179,10 @@ class SettingsWindow : public ISettingsHost {
 
   HostActions host_actions_;
   core::store::AppSettings current_settings_{};
-  DraftState draft_{};
+  SettingsDraftState draft_state_{};
+  // 兼容别名：draft_ 字段写入点（面板 BuildRows/Render 参数与内部 200+ 处读写）零改动；
+  // 规则归属见 SettingsDraftState。
+  DraftState& draft_ = draft_state_.draft();
   DataStats stats_{};
   Section selected_section_ = Section::General;
   FieldId active_field_ = FieldId::None;
@@ -179,9 +191,9 @@ class SettingsWindow : public ISettingsHost {
   bool status_error_ = false;
   bool status_persistent_ = false;
 
-  std::vector<SearchHit> search_hits_;
-  int search_hover_index_ = -1;
-  int search_window_offset_ = 0;
+  // 命中/导航/查询消费的唯一权威在 search_；本壳只留 textbox 镜像（search_text_）
+  // 与可见槽位几何（布局像素，属绘制壳）。
+  SettingsSearchController search_{};
   RECT search_results_rect_{};
   std::vector<RECT> search_hit_rects_;
 

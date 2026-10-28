@@ -250,20 +250,29 @@ common::Status AppController::LoadSettings(store::AppSettings* settings) {
 common::Status AppController::SaveSettings(const store::AppSettings& settings) {
   std::scoped_lock lock(mutex_);
   settings_ = settings;
+  PublishSettingsCacheLocked();
   return settings_repository_.Save(settings_);
 }
 
+void AppController::PublishSettingsCacheLocked() {
+  std::scoped_lock lock(settings_cache_mutex_);
+  settings_cache_ = settings_;
+}
+
 store::AppSettings AppController::current_settings() const {
-  const auto wait_started_at = GetTickCount64();
-  std::scoped_lock lock(mutex_);
-  const auto wait_elapsed_ms = GetTickCount64() - wait_started_at;
-  if (wait_elapsed_ms >= 16) {
+  // 只抢 settings_cache_mutex_：这把锁的临界区就是一次结构体拷贝，正常在微秒级，
+  // 且与粘贴/写入库等长时间持锁路径完全隔离。原先这里抢的是 mutex_，粘贴事务
+  // 期间 UI 线程每帧两次调用都要排队，实测把 RenderFrame 的 draw 段拖到 47ms。
+  common::Stopwatch stopwatch;
+  std::scoped_lock lock(settings_cache_mutex_);
+  const std::int64_t wait_us = stopwatch.ElapsedUs();
+  if (wait_us >= 8000) {
     common::WriteLog(
         common::LogLevel::Warning,
         "controller.lock",
-        "current_settings waited_ms=" + std::to_string(wait_elapsed_ms));
+        "current_settings waited_ms=" + common::FormatMs(wait_us));
   }
-  return settings_;
+  return settings_cache_;
 }
 
 common::Status AppController::RunStartupMaintenance() {

@@ -11,14 +11,15 @@
 // so measurement only has to decide the total height from O(1) metadata.
 
 #include "core/store/ClipTypes.h"
+#include "ui/vlist/RowMetrics.h"
 
 namespace clipd2d::ui::vlist {
 
 struct RowHeightModel {
-  // Layout constants — keep in sync with MainWindowInternal.h row constants.
+  // Layout constants — 唯一来源是 ui/vlist/RowMetrics.h，这里只做别名。
   static constexpr int kPadTop = 2;
-  static constexpr int kHeaderHeight = 30;   // == kRowHeaderHeight
-  static constexpr int kTagBlockHeight = 22;  // kTagChipHeight(18) + 4
+  static constexpr int kHeaderHeight = kRowHeaderHeight;   // == kRowHeaderHeight
+  static constexpr int kTagBlockHeight = kTagChipHeight + 4;  // 18 + 4
   static constexpr int kPadBottom = 4;
 
   static constexpr int kLineHeightComfy = 20;

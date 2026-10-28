@@ -3,8 +3,7 @@
 #include <algorithm>
 #include <sstream>
 
-#include "app/StartupTrace.h"
-#include "app/StartupTrace.h"
+#include "common/StartupTrace.h"
 #include "common/Log.h"
 
 #pragma comment(lib, "dcomp.lib")
@@ -73,7 +72,7 @@ common::Status D2dShell::Initialize(HWND hwnd) {
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("d2d_factory_ready");
+  clipd2d::common::MarkStartupPhase("d2d_factory_ready");
 
   hr = DWriteCreateFactory(
       DWRITE_FACTORY_TYPE_SHARED,
@@ -83,13 +82,13 @@ common::Status D2dShell::Initialize(HWND hwnd) {
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("dwrite_factory_ready");
+  clipd2d::common::MarkStartupPhase("dwrite_factory_ready");
 
   status = CreatePrimaryTextFormats();
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("d2d_primary_text_formats_ready");
+  clipd2d::common::MarkStartupPhase("d2d_primary_text_formats_ready");
   return EnsureDeviceResources();
 }
 
@@ -108,7 +107,7 @@ common::Status D2dShell::Initialize1_1(HWND hwnd) {
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("d2d_factory_ready");
+  clipd2d::common::MarkStartupPhase("d2d_factory_ready");
 
   hr = DWriteCreateFactory(
       DWRITE_FACTORY_TYPE_SHARED,
@@ -118,13 +117,13 @@ common::Status D2dShell::Initialize1_1(HWND hwnd) {
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("dwrite_factory_ready");
+  clipd2d::common::MarkStartupPhase("dwrite_factory_ready");
 
   status = CreatePrimaryTextFormats();
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("d2d_primary_text_formats_ready");
+  clipd2d::common::MarkStartupPhase("d2d_primary_text_formats_ready");
   return EnsureDeviceResources();
 }
 
@@ -144,7 +143,7 @@ common::Status D2dShell::InitializeDComp(HWND hwnd) {
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("d2d_factory_ready");
+  clipd2d::common::MarkStartupPhase("d2d_factory_ready");
 
   hr = DWriteCreateFactory(
       DWRITE_FACTORY_TYPE_SHARED,
@@ -154,13 +153,13 @@ common::Status D2dShell::InitializeDComp(HWND hwnd) {
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("dwrite_factory_ready");
+  clipd2d::common::MarkStartupPhase("dwrite_factory_ready");
 
   status = CreatePrimaryTextFormats();
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("d2d_primary_text_formats_ready");
+  clipd2d::common::MarkStartupPhase("d2d_primary_text_formats_ready");
   return common::Status::Ok();
 }
 
@@ -375,7 +374,7 @@ common::Status D2dShell::CreateDeviceResources() {
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("d2d_render_target_ready");
+  clipd2d::common::MarkStartupPhase("d2d_render_target_ready");
 
   render_target_->SetDpi(static_cast<FLOAT>(dpi_), static_cast<FLOAT>(dpi_));
   return CreateBrushes();
@@ -944,7 +943,7 @@ common::Status D2dShell::CreateBrushes() {
   if (SUCCEEDED(hr)) hr = rt->CreateSolidColorBrush(palette.white, white_brush_.ReleaseAndGetAddressOf());
   if (SUCCEEDED(hr)) {
     brushes_theme_epoch_ = ThemeEpoch();
-    clipd2d::app::MarkStartupPhase("d2d_brushes_ready");
+    clipd2d::common::MarkStartupPhase("d2d_brushes_ready");
   }
   return FromHr(hr, "创建 D2D 画刷失败。");
 }

@@ -10,6 +10,7 @@
 
 #include "common/Paths.h"
 #include "core/clipboard/ClipboardCapture.h"
+#include "core/clipboard/ClipboardFormat.h"
 #include "core/qr/UrlQrGenerator.h"
 #include "tests/TestSupport.h"
 
@@ -201,6 +202,150 @@ CLIPD2D_TEST(ClipboardReadAnsiGlobalStopsAtEmbeddedNulBeforeGlobalSize) {
 CLIPD2D_TEST(ClipboardReadGlobalTextRejectsNullHandles) {
   CLIPD2D_CHECK(!clipd2d::core::clipboard::ReadGlobalText(nullptr).status.ok());
   CLIPD2D_CHECK(!clipd2d::core::clipboard::ReadAnsiGlobal(nullptr).status.ok());
+}
+
+// 测试辅助：清空剪贴板并消化一次会话增量，返回清空后的 sequence。
+DWORD ClearClipboardAndReadSequence() {
+  if (OpenClipboard(nullptr)) {
+    EmptyClipboard();
+    CloseClipboard();
+  }
+  return GetClipboardSequenceNumber();
+}
+
+// Bug A 会话数探测点的测试侧计数器（回调必须是无捕获函数指针）。
+int g_clipboard_session_count = 0;
+void CountClipboardSession() {
+  ++g_clipboard_session_count;
+}
+
+// Bug A 回归锁：图片写回必须收敛为单次剪贴板会话。
+// 直接测量写回期间 ClipboardWriter 打开的会话数；若写回跨多个
+// Open/Empty/Close 会话，探测计数会大于 1。
+// 注意：不能用 sequence 精确增量做断言——系统放置 CF_DIB 时会自动
+// 合成派生格式，每次合成都使 sequence 额外 +1（增量不确定）。
+CLIPD2D_TEST(ClipboardWriterImageWritebackFromPngUsesSingleClipboardSession) {
+  HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(hr)) {
+    throw std::runtime_error("CoInitializeEx failed");
+  }
+  const auto temp_dir = CreateUniqueTempDirectory(L"clipboard-session-test");
+  auto cleanup = [&]() {
+    DeleteDirectoryIfExists(temp_dir);
+    CoUninitialize();
+  };
+  const AppPaths paths = MakeTempAppPaths(temp_dir);
+
+  std::wstring output_path;
+  auto status = clipd2d::core::qr::GenerateUrlQrPng(
+      paths,
+      L"https://example.com/single-session",
+      &output_path);
+  if (!status.ok()) {
+    cleanup();
+    throw std::runtime_error("GenerateUrlQrPng failed: " + status.message);
+  }
+
+  ClearClipboardAndReadSequence();
+
+  g_clipboard_session_count = 0;
+  core::clipboard::SetClipboardSessionProbe(&CountClipboardSession);
+
+  core::store::ClipRecord clip{};
+  clip.summary.content_type = core::store::ClipContentType::Image;
+  clip.storage_path = output_path;
+  status = core::clipboard::WriteClipToClipboard(clip, {}, false);
+  core::clipboard::SetClipboardSessionProbe(nullptr);
+  if (!status.ok()) {
+    cleanup();
+    throw std::runtime_error("WriteClipToClipboard failed: " + status.message);
+  }
+
+  CLIPD2D_CHECK_EQ(g_clipboard_session_count, 1);
+
+  // 组合写入后 payload 齐全：派生格式 + 标准格式 + 文件列表全部就位。
+  CLIPD2D_CHECK(HasClipboardFormat(CF_DIB));
+  CLIPD2D_CHECK(HasClipboardFormat(CF_DIBV5));
+  CLIPD2D_CHECK(HasClipboardFormat(CF_BITMAP));
+  CLIPD2D_CHECK(HasClipboardFormat(CF_HDROP));
+  CLIPD2D_CHECK(HasClipboardFormat(clipd2d::core::clipboard::GetPngClipboardFormat()));
+
+  cleanup();
+}
+
+// Bug A 回归锁：无 storage_path 的图片条目走 SetClipboardImageClip，
+// 格式 payload 全部在内存预置，写回同样只含一次会话。
+CLIPD2D_TEST(ClipboardWriterImageClipFromFormatsUsesSingleClipboardSession) {
+  HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(hr)) {
+    throw std::runtime_error("CoInitializeEx failed");
+  }
+  const auto temp_dir = CreateUniqueTempDirectory(L"clipboard-formats-test");
+  auto cleanup = [&]() {
+    DeleteDirectoryIfExists(temp_dir);
+    CoUninitialize();
+  };
+
+  ClearClipboardAndReadSequence();
+
+  // 1x1 32bpp DIB（BITMAPINFOHEADER + 4 字节像素）与 DIBV5（BITMAPV5HEADER + 4 字节像素）。
+  std::vector<std::uint8_t> dib(sizeof(BITMAPINFOHEADER) + 4, 0);
+  auto* dib_header = reinterpret_cast<BITMAPINFOHEADER*>(dib.data());
+  dib_header->biSize = sizeof(BITMAPINFOHEADER);
+  dib_header->biWidth = 1;
+  dib_header->biHeight = -1;
+  dib_header->biPlanes = 1;
+  dib_header->biBitCount = 32;
+  dib_header->biCompression = BI_RGB;
+
+  std::vector<std::uint8_t> dibv5(sizeof(BITMAPV5HEADER) + 4, 0);
+  auto* dibv5_header = reinterpret_cast<BITMAPV5HEADER*>(dibv5.data());
+  dibv5_header->bV5Size = sizeof(BITMAPV5HEADER);
+  dibv5_header->bV5Width = 1;
+  dibv5_header->bV5Height = -1;
+  dibv5_header->bV5Planes = 1;
+  dibv5_header->bV5BitCount = 32;
+  dibv5_header->bV5Compression = BI_BITFIELDS;
+  dibv5_header->bV5RedMask = 0x00FF0000;
+  dibv5_header->bV5GreenMask = 0x0000FF00;
+  dibv5_header->bV5BlueMask = 0x000000FF;
+  dibv5_header->bV5AlphaMask = 0xFF000000;
+
+  core::store::ClipRecord clip{};
+  clip.summary.content_type = core::store::ClipContentType::Image;
+  clip.formats.push_back({"CF_DIB", core::store::ClipFormatPayloadKind::Binary, {}, dib, {}, 0});
+  clip.formats.push_back({"CF_DIBV5", core::store::ClipFormatPayloadKind::Binary, {}, dibv5, {}, 1});
+
+  g_clipboard_session_count = 0;
+  core::clipboard::SetClipboardSessionProbe(&CountClipboardSession);
+  auto status = core::clipboard::WriteClipToClipboard(clip, {}, false);
+  core::clipboard::SetClipboardSessionProbe(nullptr);
+  if (!status.ok()) {
+    cleanup();
+    throw std::runtime_error("WriteClipToClipboard failed: " + status.message);
+  }
+
+  CLIPD2D_CHECK_EQ(g_clipboard_session_count, 1);
+
+  CLIPD2D_CHECK(HasClipboardFormat(CF_DIB));
+  CLIPD2D_CHECK(HasClipboardFormat(CF_DIBV5));
+
+  // 回读 CF_DIB payload，确认写回的字节与输入一致（头 + 1 像素）。
+  CLIPD2D_CHECK(OpenClipboard(nullptr));
+  HGLOBAL dib_data = static_cast<HGLOBAL>(GetClipboardData(CF_DIB));
+  CLIPD2D_CHECK(dib_data != nullptr);
+  if (dib_data != nullptr) {
+    CLIPD2D_CHECK_EQ(GlobalSize(dib_data), dib.size());
+    const void* locked = GlobalLock(dib_data);
+    CLIPD2D_CHECK(locked != nullptr);
+    if (locked != nullptr) {
+      CLIPD2D_CHECK(std::memcmp(locked, dib.data(), dib.size()) == 0);
+      GlobalUnlock(dib_data);
+    }
+  }
+  CloseClipboard();
+
+  cleanup();
 }
 
 }  // namespace clipd2d::tests

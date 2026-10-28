@@ -1,4 +1,4 @@
-#include "app/StartupTrace.h"
+#include "common/StartupTrace.h"
 
 #include <chrono>
 #include <mutex>
@@ -7,7 +7,7 @@
 
 #include "common/Log.h"
 
-namespace clipd2d::app {
+namespace clipd2d::common {
 
 namespace {
 
@@ -57,4 +57,4 @@ void MarkStartupPhase(std::string_view phase) {
       key + " total_ms=" + std::to_string(total_ms) + " delta_ms=" + std::to_string(delta_ms));
 }
 
-}  // namespace clipd2d::app
+}  // namespace clipd2d::common

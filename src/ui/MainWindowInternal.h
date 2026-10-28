@@ -25,22 +25,26 @@
 #include <functional>
 
 #include "common/ClipboardSuppression.h"
-#include "common/ClipTextDisplay.h"
+#include "core/browser/ClipTextDisplay.h"
 #include "common/Log.h"
+#include "common/Stopwatch.h"
 #include "common/Paths.h"
 #include "common/StringUtil.h"
 #include "common/Utf8.h"
 #include "ui/FluentIcons.h"
 #include "ui/PanelWindowChrome.h"
 #include "ui/GroupMenuCommand.h"
-#include "ui/GroupNameDialog.h"
-#include "ui/TagEditorDialog.h"
 
 #include "ui/MainWindowTypes.h"
 #include "ui/D2dUtil.h"
 #include "ui/DragDropInterop.h"
+#include "ui/HistoryPayloads.h"
 #include "ui/ImageLoaderUtil.h"
+#include "ui/MainWindowMetrics.h"
 #include "ui/OwnedMessage.h"
+#include "ui/WindowContract.h"
+#include "ui/ClipRowText.h"
+#include "ui/DrawTextUtil.h"
 
 namespace clipd2d::ui {
 
@@ -60,87 +64,7 @@ inline int ActiveChipBarHeight() {
   return ShowFilterChipBarFlag() ? 28 : 0;
 }
 
-struct CountReadyPayload {
-  std::uint64_t generation = 0;
-  common::Status status;
-  std::int64_t count = 0;
-};
-
-struct PageReadyPayload {
-  std::uint64_t generation = 0;
-  int page_index = 0;
-  common::Status status;
-  std::vector<core::store::ClipSummary> clips;
-};
-
-struct ClipReadyPayload {
-  std::uint64_t generation = 0;
-  std::int64_t clip_id = 0;
-  common::Status status;
-  std::optional<core::store::ClipRecord> clip;
-};
-
-struct StartupMetadataReadyPayload {
-  common::Status groups_status;
-  common::Status tags_status;
-  common::Status queue_status;
-  std::vector<core::store::GroupRecord> groups;
-  std::vector<core::store::TagRecord> tags;
-  int queue_count = 0;
-};
-
-struct BitmapReadyPayload {
-  std::uint64_t generation = 0;
-  std::wstring key;
-  std::wstring source_path;
-  visual_assets::ShellIconPurpose shell_icon_purpose = visual_assets::ShellIconPurpose::FilePrimary;
-  UINT width = 0;
-  UINT height = 0;
-  std::vector<std::uint8_t> pixels;
-};
-
 namespace {
-
-constexpr wchar_t kMainWindowClassName[] = L"Scraps.MainWindow";
-constexpr int kDefaultWindowWidth = 460;
-constexpr int kDefaultWindowHeight = 720;
-constexpr int kMinWindowWidth = 340;
-constexpr int kMinWindowHeight = 420;
-constexpr int kResizeBorder = 2;
-constexpr int kHeaderHeight = 36;
-constexpr int kToolbarHeight = 36;
-constexpr int kBottomBarHeight = 28;
-constexpr int kBottomBarButtonGap = 10;
-constexpr int kToolbarButtonSize = 28;
-constexpr int kToolbarGap = 6;
-constexpr int kTabButtonWidth = 28;
-constexpr int kTopPadding = 0;
-constexpr int kHorizontalPadding = 10;
-constexpr int kScrollBarWidth = 6;
-constexpr int kRowHeaderHeight = 30;
-constexpr int kRowPaddingX = 10;
-constexpr int kRowHeaderIconSize = 18;
-constexpr int kRowActionButtonSize = 18;
-constexpr int kRowActionGap = 4;
-constexpr int kQueueDragHandleWidth = 14;
-constexpr int kTagChipHeight = 18;
-constexpr int kTagChipGap = 6;
-constexpr int kTimeGroupHeaderHeight = 20;
-constexpr int kBackToTopButtonWidth = 108;
-constexpr int kBackToTopButtonHeight = 24;
-constexpr int kBackToTopRevealHeight = 36;
-constexpr float kSeparatorStrokeWidth = 0.6f;
-constexpr float kControlStrokeWidth = 0.6f;
-constexpr float kSearchIconInset = 6.5f;
-constexpr float kToolbarIconInset = 6.5f;
-constexpr float kTabIconInset = 6.5f;
-constexpr float kTopIconWeightBoost = 0.78f;
-constexpr int kPageCacheLimit = 12;
-constexpr std::size_t kTextLayoutCacheLimit = 512;
-constexpr std::size_t kSourceIconCacheLimit = 64;
-constexpr std::size_t kFileIconCacheLimit = 96;
-constexpr std::size_t kThumbnailCacheLimit = 128;
-
 
 inline RECT SearchClearButtonRect(const clipd2d::ui::PanelLayout& layout) {
   return RECT{
@@ -169,15 +93,6 @@ enum class TimeGroupBucket {
   Yesterday,
   Last7Days,
   Older,
-};
-
-enum class CachedTextRole {
-  Meta = 1,
-  FilePrimary = 2,
-  FileTrailing = 3,
-  FilePath = 4,
-  Content = 5,
-  UI = 6,
 };
 
 constexpr TabDefinition kTabs[] = {
@@ -960,63 +875,9 @@ std::wstring ReadWindowText(HWND hwnd) {
   return text;
 }
 
-void DrawCenteredText(
-    ID2D1RenderTarget* target,
-    const std::wstring& text,
-    IDWriteTextFormat* format,
-    ID2D1Brush* brush,
-    const RECT& rect) {
-  if (text.empty()) {
-    return;
-  }
-  target->DrawTextW(
-      text.c_str(),
-      static_cast<UINT32>(text.size()),
-      format,
-      ToRectF(rect),
-      brush,
-      D2D1_DRAW_TEXT_OPTIONS_CLIP);
-}
 
-void DrawCachedCenteredText(
-    TextLayoutCache* cache,
-    IDWriteFactory* factory,
-    ID2D1RenderTarget* target,
-    const std::wstring& text,
-    IDWriteTextFormat* format,
-    ID2D1Brush* brush,
-    const RECT& rect) {
-  if (cache == nullptr || factory == nullptr || target == nullptr || format == nullptr || brush == nullptr || text.empty()) {
-    return;
-  }
-  const float width = static_cast<float>(std::max(1L, rect.right - rect.left));
-  const float height = static_cast<float>(std::max(1L, rect.bottom - rect.top));
-  TextLayoutCache::Key key{static_cast<std::uint64_t>(std::hash<std::wstring>{}(text)), static_cast<int>(CachedTextRole::UI)};
-  const auto layout = cache->GetOrCreate(
-      factory,
-      key,
-      text,
-      format,
-      width,
-      height,
-      true);
-  if (layout != nullptr) {
-    target->DrawTextLayout(
-        D2D1::Point2F(static_cast<float>(rect.left), static_cast<float>(rect.top)),
-        layout.Get(),
-        brush,
-        D2D1_DRAW_TEXT_OPTIONS_CLIP);
-  }
-}
 
-void ConfigureFormat(IDWriteTextFormat* format, DWRITE_TEXT_ALIGNMENT alignment, DWRITE_PARAGRAPH_ALIGNMENT paragraph) {
-  format->SetTextAlignment(alignment);
-  format->SetParagraphAlignment(paragraph);
-}
 
-std::wstring ToWide(std::string_view text) {
-  return common::Utf8ToWide(text).wide;
-}
 
 RECT QueueDragHandleRect(const RECT& header_rect) {
   const int top = header_rect.top + std::max(0, (kRowHeaderHeight - 18) / 2);
@@ -1041,21 +902,7 @@ void DrawQueueDragHandle(ID2D1RenderTarget* target, const RECT& rect, ID2D1Brush
   }
 }
 
-int WidthBucket(float width) {
-  const int rounded = static_cast<int>(std::lround(width / 8.0f)) * 8;
-  return std::max(8, rounded);
-}
 
-TextLayoutCache::Key MakeTextLayoutKey(
-    const core::store::ClipSummary& summary,
-    CachedTextRole role,
-    float width) {
-  return TextLayoutCache::Key{
-      static_cast<std::uint64_t>(summary.id),
-      static_cast<std::uint64_t>(summary.updated_at),
-      WidthBucket(width),
-      static_cast<int>(role)};
-}
 
 void ComputeRequestRange(
     int item_count,
@@ -1107,54 +954,7 @@ void ComputeRequestRange(
   }
 }
 
-void DrawCachedText(
-    TextLayoutCache* cache,
-    IDWriteFactory* factory,
-    ID2D1RenderTarget* target,
-    const core::store::ClipSummary& summary,
-    CachedTextRole role,
-    const std::wstring& text,
-    IDWriteTextFormat* format,
-    ID2D1Brush* brush,
-    const RECT& rect,
-    bool single_line) {
-  if (cache == nullptr || factory == nullptr || target == nullptr || format == nullptr || brush == nullptr || text.empty()) {
-    return;
-  }
-  const float width = static_cast<float>(std::max(1L, rect.right - rect.left));
-  const float height = static_cast<float>(std::max(1L, rect.bottom - rect.top));
-  const auto layout = cache->GetOrCreate(
-      factory,
-      MakeTextLayoutKey(summary, role, width),
-      text,
-      format,
-      static_cast<float>(WidthBucket(width)),
-      height,
-      single_line);
-  if (layout != nullptr) {
-    target->DrawTextLayout(
-        D2D1::Point2F(static_cast<float>(rect.left), static_cast<float>(rect.top)),
-        layout.Get(),
-        brush,
-        D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    return;
-  }
-  target->DrawTextW(
-      text.c_str(),
-      static_cast<UINT32>(text.size()),
-      format,
-      ToRectF(rect),
-      brush,
-      D2D1_DRAW_TEXT_OPTIONS_CLIP);
-}
 
-std::wstring ToLowerCopy(std::wstring_view text) {
-  std::wstring lower(text);
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) {
-    return static_cast<wchar_t>(std::towlower(ch));
-  });
-  return lower;
-}
 
 std::vector<std::wstring> TokenizeSearchQuery(const std::wstring& text) {
   std::vector<std::wstring> tokens;
@@ -1180,150 +980,8 @@ std::vector<std::wstring> TokenizeSearchQuery(const std::wstring& text) {
   return tokens;
 }
 
-struct HighlightRange {
-  UINT32 start = 0;
-  UINT32 length = 0;
-};
 
-std::vector<HighlightRange> ComputeHighlightRanges(const std::wstring& text, const std::vector<std::wstring>& tokens) {
-  std::vector<HighlightRange> ranges;
-  if (text.empty() || tokens.empty()) {
-    return ranges;
-  }
 
-  const std::wstring lower = ToLowerCopy(text);
-  for (const auto& token : tokens) {
-    if (token.empty()) {
-      continue;
-    }
-    size_t start = 0;
-    while (start < lower.size()) {
-      const size_t found = lower.find(token, start);
-      if (found == std::wstring::npos) {
-        break;
-      }
-      ranges.push_back(HighlightRange{
-          static_cast<UINT32>(found),
-          static_cast<UINT32>(token.size())});
-      start = found + token.size();
-    }
-  }
-
-  if (ranges.empty()) {
-    return ranges;
-  }
-  std::sort(ranges.begin(), ranges.end(), [](const HighlightRange& lhs, const HighlightRange& rhs) {
-    if (lhs.start != rhs.start) {
-      return lhs.start < rhs.start;
-    }
-    return lhs.length < rhs.length;
-  });
-
-  std::vector<HighlightRange> merged;
-  merged.push_back(ranges.front());
-  for (size_t index = 1; index < ranges.size(); ++index) {
-    HighlightRange& current = merged.back();
-    const UINT32 current_end = current.start + current.length;
-    if (ranges[index].start <= current_end) {
-      current.length = std::max(current_end, ranges[index].start + ranges[index].length) - current.start;
-    } else {
-      merged.push_back(ranges[index]);
-    }
-  }
-  return merged;
-}
-
-void DrawHighlightedText(
-    IDWriteFactory* factory,
-    ID2D1RenderTarget* target,
-    const std::wstring& text,
-    IDWriteTextFormat* format,
-    ID2D1Brush* brush,
-    ID2D1Brush* highlight_brush,
-    const RECT& rect,
-    bool single_line,
-    const std::vector<std::wstring>& tokens) {
-  if (factory == nullptr || target == nullptr || format == nullptr || brush == nullptr || text.empty()) {
-    return;
-  }
-  if (tokens.empty()) {
-    target->DrawTextW(
-        text.c_str(),
-        static_cast<UINT32>(text.size()),
-        format,
-        ToRectF(rect),
-        brush,
-        D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    return;
-  }
-
-  Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
-  const float width = static_cast<float>(std::max(1L, rect.right - rect.left));
-  const float height = static_cast<float>(std::max(1L, rect.bottom - rect.top));
-  if (FAILED(factory->CreateTextLayout(
-          text.c_str(),
-          static_cast<UINT32>(text.size()),
-          format,
-          width,
-          height,
-          layout.ReleaseAndGetAddressOf()))) {
-    target->DrawTextW(
-        text.c_str(),
-        static_cast<UINT32>(text.size()),
-        format,
-        ToRectF(rect),
-        brush,
-        D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    return;
-  }
-  if (single_line) {
-    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-  }
-
-  const auto ranges = ComputeHighlightRanges(text, tokens);
-  for (const auto& range : ranges) {
-    UINT32 actual_count = 0;
-    layout->HitTestTextRange(
-        range.start,
-        range.length,
-        static_cast<float>(rect.left),
-        static_cast<float>(rect.top),
-        nullptr,
-        0,
-        &actual_count);
-    if (actual_count == 0) {
-      continue;
-    }
-    std::vector<DWRITE_HIT_TEST_METRICS> metrics(actual_count);
-    if (FAILED(layout->HitTestTextRange(
-            range.start,
-            range.length,
-            static_cast<float>(rect.left),
-            static_cast<float>(rect.top),
-            metrics.data(),
-            actual_count,
-            &actual_count))) {
-      continue;
-    }
-    for (UINT32 index = 0; index < actual_count; ++index) {
-      const auto& metric = metrics[index];
-      const D2D1_RECT_F fill_rect = D2D1::RectF(
-          static_cast<float>(metric.left),
-          static_cast<float>(metric.top),
-          static_cast<float>(metric.left + metric.width),
-          static_cast<float>(metric.top + metric.height));
-      target->FillRoundedRectangle(
-          D2D1::RoundedRect(fill_rect, 4.0f, 4.0f),
-          highlight_brush);
-    }
-  }
-
-  target->DrawTextLayout(
-      D2D1::Point2F(static_cast<float>(rect.left), static_cast<float>(rect.top)),
-      layout.Get(),
-      brush,
-      D2D1_DRAW_TEXT_OPTIONS_CLIP);
-}
 
 D2D1_COLOR_F ParseTagColor(std::wstring_view color) {
   std::wstring value(color);
@@ -1410,9 +1068,6 @@ const wchar_t* DisplayTimeGroupLabel(TimeGroupBucket bucket) {
   return L"Today";
 }
 
-std::wstring ExtractFirstLine(std::string_view text) {
-  return common::clip_text_display::ExtractFirstLine(text);
-}
 
 std::wstring TrimForDisplay(std::wstring text, size_t limit) {
   return common::clip_text_display::TrimForDisplay(std::move(text), limit);
@@ -1505,17 +1160,11 @@ std::wstring FormatMetaLine(const core::store::ClipSummary& summary) {
   return text;
 }
 
-std::wstring SummaryTitle(const core::store::ClipSummary& summary) {
-  return common::clip_text_display::SummaryTitle(summary);
-}
 
 std::wstring SummarySnippet(const core::store::ClipSummary& summary) {
   return common::clip_text_display::SummarySnippet(summary);
 }
 
-std::wstring RowContentText(const core::store::ClipSummary& summary) {
-  return common::clip_text_display::RowContentText(summary);
-}
 
 const wchar_t* ContentGlyph(core::store::ClipContentType type) {
   switch (type) {
@@ -1664,53 +1313,10 @@ std::vector<std::wstring> ExtractFilePathsFromClip(const core::store::ClipRecord
   return ExtractFilePathsFromText(common::Utf8ToWide(clip.plain_text).wide);
 }
 
-std::wstring FirstFilePathFromSummary(const core::store::ClipSummary& summary) {
-  if (summary.content_type == core::store::ClipContentType::Files && !summary.storage_path.empty()) {
-    return common::TrimWide(summary.storage_path);
-  }
-  if (summary.content_type == core::store::ClipContentType::Files && !summary.secondary_path.empty()) {
-    return common::TrimWide(summary.secondary_path);
-  }
-  return common::TrimWide(ExtractFirstLine(summary.snippet));
-}
 
-std::wstring LowercaseWide(std::wstring text) {
-  std::transform(
-      text.begin(),
-      text.end(),
-      text.begin(),
-      [](wchar_t ch) {
-        return static_cast<wchar_t>(std::towlower(ch));
-      });
-  return text;
-}
 
-bool IsImageFilePath(const std::wstring& path) {
-  if (path.empty()) {
-    return false;
-  }
 
-  const std::wstring extension = LowercaseWide(std::filesystem::path(path).extension().wstring());
-  return extension == L".png" || extension == L".jpg" || extension == L".jpeg" ||
-         extension == L".bmp" || extension == L".gif" || extension == L".webp" ||
-         extension == L".tif" || extension == L".tiff" || extension == L".ico" ||
-         extension == L".heic";
-}
 
-bool IsVideoFilePath(const std::wstring& path) {
-  if (path.empty()) {
-    return false;
-  }
-
-  const std::wstring extension = LowercaseWide(std::filesystem::path(path).extension().wstring());
-  return extension == L".mp4" || extension == L".mov" || extension == L".m4v" ||
-         extension == L".avi" || extension == L".mkv" || extension == L".webm" ||
-         extension == L".wmv";
-}
-
-bool SupportsSystemThumbnailPreviewPath(const std::wstring& path) {
-  return IsImageFilePath(path) || IsVideoFilePath(path);
-}
 
 bool LoadSystemThumbnailPixels(
     const std::wstring& path,
@@ -1909,83 +1515,9 @@ std::wstring FormatPanelMetaLine(const core::store::ClipSummary& summary) {
   return text;
 }
 
-std::wstring FileDisplayName(const std::wstring& path) {
-  if (path.empty()) {
-    return L"";
-  }
-  std::filesystem::path fs_path(path);
-  std::wstring name = fs_path.filename().wstring();
-  if (name.empty()) {
-    name = fs_path.wstring();
-  }
-  return name;
-}
 
-std::wstring FormatByteSize(std::uintmax_t bytes) {
-  static constexpr const wchar_t* kUnits[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
-  constexpr size_t kUnitCount = sizeof(kUnits) / sizeof(kUnits[0]);
-  double value = static_cast<double>(bytes);
-  size_t unit_index = 0;
-  while (value >= 1024.0 && unit_index + 1 < kUnitCount) {
-    value /= 1024.0;
-    ++unit_index;
-  }
 
-  wchar_t buffer[32]{};
-  if (unit_index == 0) {
-    swprintf_s(buffer, L"%llu %ls", static_cast<unsigned long long>(bytes), kUnits[unit_index]);
-  } else if (value >= 100.0) {
-    swprintf_s(buffer, L"%.0f %ls", value, kUnits[unit_index]);
-  } else {
-    swprintf_s(buffer, L"%.1f %ls", value, kUnits[unit_index]);
-  }
-  return buffer;
-}
 
-std::wstring FileTrailingText(const core::store::ClipSummary& summary, const std::wstring& first_path) {
-  if (summary.file_count > 1) {
-    return L"\x5171 " + std::to_wstring(summary.file_count) + L" \x9879";
-  }
-  if (first_path.empty()) {
-    return L"";
-  }
-
-  std::error_code ec;
-  std::filesystem::path fs_path(first_path);
-  if (std::filesystem::is_directory(fs_path, ec)) {
-    return L"\x6587\x4EF6\x5939";
-  }
-
-  const auto file_size = std::filesystem::file_size(fs_path, ec);
-  if (!ec) {
-    return FormatByteSize(file_size);
-  }
-  if (_wcsicmp(fs_path.extension().c_str(), L".exe") == 0) {
-    return L"\x7A0B\x5E8F";
-  }
-  return L"\x6587\x4EF6";
-}
-
-std::wstring FilePathLine(const core::store::ClipSummary& summary, const std::wstring& first_path) {
-  if (summary.file_count > 1) {
-    std::wstring line;
-    if (!summary.snippet.empty()) {
-      line = ToWide(summary.snippet);
-    } else if (!first_path.empty()) {
-      std::filesystem::path fs_path(first_path);
-      line = fs_path.has_parent_path() ? fs_path.parent_path().wstring() : first_path;
-    }
-    if (!line.empty()) {
-      line += L"  \x00B7  ";
-    }
-    line += L"\x53E6 " + std::to_wstring(std::max(1, summary.file_count - 1)) + L" \x9879";
-    return line;
-  }
-  if (!first_path.empty()) {
-    return first_path;
-  }
-  return ExtractFirstLine(summary.snippet);
-}
 
 UINT DetectRefreshRateHz(HWND hwnd) {
   if (hwnd == nullptr) {

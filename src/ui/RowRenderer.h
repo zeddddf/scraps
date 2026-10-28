@@ -17,10 +17,11 @@
 
 #include "core/store/ClipTypes.h"
 #include "ui/ClipImagePreview.h"
+#include "ui/ClipRowText.h"
 #include "ui/ClipVisualAssets.h"
 #include "ui/ClipVisualFileContent.h"
 #include "ui/D2dShell.h"
-#include "ui/MainWindowInternal.h"
+#include "ui/DrawTextUtil.h"
 
 namespace clipd2d::ui {
 

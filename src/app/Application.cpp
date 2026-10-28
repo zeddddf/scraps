@@ -2,15 +2,18 @@
 
 #include <algorithm>
 #include <commctrl.h>
+#include <cstdio>
 #include <filesystem>
 #include <ole2.h>
 #include <shellapi.h>
+#include <string>
 
 #include "common/Log.h"
+#include "common/Stopwatch.h"
 #include "common/StringUtil.h"
 #include "common/Utf8.h"
 #include "app/LaunchPolicy.h"
-#include "app/StartupTrace.h"
+#include "common/StartupTrace.h"
 #include "app/AppStrings.h"
 #include "platform/win32/HotkeySpec.h"
 #include "ui/PanelWindowChrome.h"
@@ -112,7 +115,7 @@ common::Status Application::Initialize(HINSTANCE instance, int n_cmd_show) {
     return common::Status::Ok();
   }
 
-  ResetStartupTrace();
+  common::ResetStartupTrace();
 
   const HRESULT com_result = OleInitialize(nullptr);
   if (FAILED(com_result)) {
@@ -131,13 +134,13 @@ common::Status Application::Initialize(HINSTANCE instance, int n_cmd_show) {
   if (!status.ok()) {
     return status;
   }
-  MarkStartupPhase("paths_ready");
+  common::MarkStartupPhase("paths_ready");
 
   status = app_controller_.Initialize(app_paths_);
   if (!status.ok()) {
     return status;
   }
-  MarkStartupPhase("controller_ready");
+  common::MarkStartupPhase("controller_ready");
   core::store::AppSettings startup_settings = app_controller_.current_settings();
   // C1 暗色模式：窗口创建前先按持久化主题模式设置全局明暗态。
   ApplyThemeMode(startup_settings.theme);
@@ -148,7 +151,7 @@ common::Status Application::Initialize(HINSTANCE instance, int n_cmd_show) {
   }
   const LaunchDecision launch_decision =
       DecideLaunchBehavior(startup_settings, bootstrap_state.has_any_settings, bootstrap_state.has_any_clips, n_cmd_show != SW_HIDE);
-  MarkStartupPhase("launch_policy_ready");
+  common::MarkStartupPhase("launch_policy_ready");
   if (launch_decision.should_mark_first_run_complete && !startup_settings.has_completed_first_run) {
     startup_settings.has_completed_first_run = true;
     status = app_controller_.SaveSettings(startup_settings);
@@ -166,7 +169,7 @@ common::Status Application::Initialize(HINSTANCE instance, int n_cmd_show) {
       instance_,
       n_cmd_show,
       launch_decision.initial_panel_behavior == InitialPanelBehavior::ShowAfterFirstLayout,
-      &app_controller_,
+      app_controller_.service_refs(),
       [this]() {
     OpenSettingsWindow();
   }, [this](HWND hwnd) {
@@ -175,20 +178,28 @@ common::Status Application::Initialize(HINSTANCE instance, int n_cmd_show) {
   if (!status.ok()) {
     return status;
   }
-  MarkStartupPhase("main_window_ready");
+  common::MarkStartupPhase("main_window_ready");
   app_controller_.SetRefreshDispatcher([this](const core::commands::RefreshRequest& request) {
     main_window_.RequestRefreshFromAnyThread(request);
+  });
+  // 异步粘贴失败回抛：paste worker 线程 → 主窗口消息（UI 线程）。
+  app_controller_.SetPasteResultDispatcher([this](const common::Status& status) {
+    common::WriteLog(
+        common::LogLevel::Warning,
+        "clipboard.paste",
+        "request failed status=" + std::to_string(static_cast<int>(status.code)) + " message=" + status.message);
+    main_window_.RequestPasteFailureFromAnyThread();
   });
 
   status = InitializeInfrastructure();
   if (!status.ok()) {
     return status;
   }
-  MarkStartupPhase("infrastructure_ready");
+  common::MarkStartupPhase("infrastructure_ready");
   const core::store::AppSettings settings = app_controller_.current_settings();
   screenshot_host_manager_.Initialize(app_paths_.root_dir, settings.screenshot_enabled && settings.screenshot_prewarm);
 
-  MarkStartupPhase("initialize_complete");
+  common::MarkStartupPhase("initialize_complete");
   StartNamedPipeInBackground();
   StartStartupMaintenance();
   update_checker_.StartAsync(
@@ -212,10 +223,29 @@ int Application::Run() {
     return 0;
   }
 
+  // UI 慢消息探针：UI 线程 = 本线程的消息循环，任何超过一帧（16.7ms）的消息处理
+  // 都会表现为界面卡顿。这里把「哪条消息、耗时多少」直接记进日志，
+  // 避免再次靠猜定位卡顿（粘贴异步化后仍报告卡顿时就是靠这个抓的现场）。
+  //
+  // 计时必须用 QPC：GetTickCount64 的 15.625ms 时钟粒度会把 0.4ms 的消息也记成
+  // 16ms（跨 tick 边界即进位），曾据此把 725 条「1ms 内」的消息全判为卡顿。
+  constexpr std::int64_t kSlowMessageThresholdUs = 16000;
   MSG message{};
   while (GetMessageW(&message, nullptr, 0, 0) > 0) {
     TranslateMessage(&message);
+    common::Stopwatch dispatch_stopwatch;
     DispatchMessageW(&message);
+    const std::int64_t dispatch_elapsed_us = dispatch_stopwatch.ElapsedUs();
+    if (dispatch_elapsed_us >= kSlowMessageThresholdUs) {
+      char message_hex[16]{};
+      std::snprintf(message_hex, sizeof(message_hex), "0x%04X", message.message);
+      common::WriteLog(
+          common::LogLevel::Warning,
+          "ui.message.slow",
+          std::string("msg=") + message_hex +
+              " hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(message.hwnd)) +
+              " elapsed_ms=" + common::FormatMs(dispatch_elapsed_us));
+    }
   }
 
   return static_cast<int>(message.wParam);

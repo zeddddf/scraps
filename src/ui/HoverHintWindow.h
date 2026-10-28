@@ -34,6 +34,9 @@ class HoverHintWindow {
   HINSTANCE instance_ = nullptr;
   HWND owner_ = nullptr;
   HWND hwnd_ = nullptr;
+  // 幂等状态：鼠标在列表上移动时 UpdateHoverTooltip 每个 WM_MOUSEMOVE 都会调 Hide()，
+  // 无条件 ShowWindow(SW_HIDE) 等于每次移动都跟窗口管理器同步一次（实测 15~47ms/次）。
+  bool visible_ = false;
   std::wstring text_;
   int width_ = 0;
   int height_ = 0;

@@ -1,5 +1,7 @@
 #include "core/store/ClipRepository.Internal.h"
 
+#include <cstdio>
+
 namespace clipd2d::core::store {
 
 namespace {
@@ -126,6 +128,47 @@ constexpr const char* kSeedSql =
     "INSERT OR IGNORE INTO tags(name, color, is_system, sort_order, created_at)"
     " VALUES('queued', '#4F8CFF', 1, 3, 0);";
 
+// 删除 SQLite 的旁路文件（-wal / -shm）。只在"主库文件被替换"的语境下调用：
+// 此时残留的 WAL 属于另一份主文件，SQLite 打开时会把它的页面回放到新主库上，
+// 直接判定 "file is not a database"，于是又触发一次自愈——死循环就成型了。
+void RemoveDatabaseSidecarFiles(const std::wstring& database_path) {
+  std::error_code ec;
+  for (const wchar_t* suffix : {L"-wal", L"-shm"}) {
+    const std::wstring sidecar = database_path + suffix;
+    if (std::filesystem::exists(sidecar, ec)) {
+      if (!std::filesystem::remove(sidecar, ec)) {
+        common::WriteLog(
+            common::LogLevel::Warning,
+            "store",
+            "Failed to remove database sidecar: " + common::WideToUtf8(sidecar).utf8);
+      }
+    }
+  }
+}
+
+// 打开失败时把"这个文件到底是什么"记下来：0 字节（被截断）与非法魔数（被别的
+// 内容覆写）是完全不同的两种事故，缺了这一行只能靠猜。
+std::string DescribeDatabaseFile(const std::wstring& database_path) {
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(database_path, ec);
+  if (ec) {
+    return "size=missing";
+  }
+  std::ifstream input(std::filesystem::path(database_path), std::ios::binary);
+  char magic[16]{};
+  input.read(magic, sizeof(magic));
+  const std::streamsize read = input.gcount();
+
+  std::string hex;
+  hex.reserve(static_cast<std::size_t>(read) * 2);
+  for (std::streamsize i = 0; i < read; ++i) {
+    char buffer[4]{};
+    std::snprintf(buffer, sizeof(buffer), "%02X", static_cast<unsigned char>(magic[i]));
+    hex += buffer;
+  }
+  return "size=" + std::to_string(size) + " magic=" + hex;
+}
+
 }  // namespace
 
 #if defined(SCRAPS_ENABLE_TEST_HOOKS)
@@ -155,7 +198,11 @@ common::Status ClipRepository::Initialize(const common::AppPaths& paths) {
     }
     common::WriteLog(common::LogLevel::Error, "store", "Schema creation failed: " + status.message);
   } else {
-    common::WriteLog(common::LogLevel::Error, "store", "Database open failed: " + status.message);
+    common::WriteLog(
+        common::LogLevel::Error,
+        "store",
+        "Database open failed: " + status.message + " (" +
+            DescribeDatabaseFile(paths.database_path) + ")");
   }
 
   // If opening or schema creation failed, database is likely corrupt!
@@ -188,6 +235,8 @@ common::Status ClipRepository::Initialize(const common::AppPaths& paths) {
   
   // Backup the corrupted files one last time before destroying them
   BackupCorruptDatabase(paths.database_path);
+  // 同 restore：重建前必须清掉旁路文件，否则新建的空库会读到旧 WAL。
+  RemoveDatabaseSidecarFiles(paths.database_path);
 
   // Open a fresh database
   status = OpenDatabase(paths.database_path);
@@ -297,16 +346,31 @@ common::Status ClipRepository::RestoreFromLatestBackup(bool* restored, std::wstr
         *corrupt_backup_path = db_path + L".corrupt." + std::to_wstring(NowEpochMs());
       }
       BackupCorruptDatabase(db_path);
+      // 复制前清一次旁路文件：BackupCorruptDatabase 已移走，这里兜住"移走失败"。
+      RemoveDatabaseSidecarFiles(db_path);
 
+      // 不能直接 copy_file 到主库：它会先把目标截断成 0 字节再写 149MB，任何在
+      // 这个窗口里打开数据库的进程（第二个实例、scraps-cli、截图工具）都会读到
+      // "file is not a database"，然后各自再触发一轮自愈——一天 185 次的来源。
+      // 改成"先写暂存文件，再原子替换"：外部要么看到旧文件，要么看到完整新文件。
+      const std::wstring staging_path = db_path + L".restore.tmp";
+      std::filesystem::remove(staging_path, ec);
       std::filesystem::copy_file(
           backup_path,
-          db_path,
+          staging_path,
           std::filesystem::copy_options::overwrite_existing,
           ec);
-      if (!ec) {
+      if (!ec && MoveFileExW(
+                     staging_path.c_str(),
+                     db_path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+        // 替换后再清一次：复制期间若有别的连接针对旧主库写出过 -wal/-shm，
+        // 重新打开时 SQLite 会把它们的页面回放到刚换上的备份上。
+        RemoveDatabaseSidecarFiles(db_path);
         *restored = true;
         return common::Status::Ok();
       }
+      std::filesystem::remove(staging_path, ec);
     } else {
       common::WriteLog(common::LogLevel::Warning, "store", "Backup file is corrupt: " + common::WideToUtf8(backup_path).utf8);
     }

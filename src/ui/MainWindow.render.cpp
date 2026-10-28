@@ -3,6 +3,7 @@
 #include "ui/ClipVisualFileContent.h"
 #include "ui/RowRenderer.h"
 #include <d2d1effects.h>
+#include "core/commands/ISettingsStore.h"
 
 namespace clipd2d::ui {
 
@@ -172,7 +173,7 @@ void MainWindow::RenderListRow(
     const core::store::AppSettings& render_settings,
     bool collect_hits) {
   const auto* summary = GetSummaryAt(index);
-  const bool selected = index == selected_index_;
+  const bool selected = index == state_.selected_index_;
   const bool hovered = RectContains(row, hover);
 
   // 行底/列表底用 surface（随主题），白刷只用于强调件上的文字/图标。
@@ -228,7 +229,7 @@ void MainWindow::RenderListRow(
     return;
   }
 
-  const auto& search_tokens = display_query_tokens_;
+  const auto& search_tokens = state_.display_query_tokens_;
 
   const RECT header_rect{
       row.left + kRowPaddingX,
@@ -265,8 +266,8 @@ void MainWindow::RenderListRow(
 
     const auto source_request = BuildSourceIconRequest(*summary);
     const std::wstring source_key = visual_assets::BuildShellIconCacheKey(source_request);
-    const auto it = thumbnail_bitmaps_.find(source_key);
-    if (it != thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
+    const auto it = state_.thumbnail_bitmaps_.find(source_key);
+    if (it != state_.thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
       TouchBitmap(&it->second);
       target->DrawBitmap(it->second.bitmap.Get(), ToRectF(source_rect), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     } else {
@@ -434,8 +435,8 @@ void MainWindow::RenderListRow(
           return {};
         }
         const std::wstring key = visual_assets::BuildShellIconCacheKey(*req);
-        const auto it = thumbnail_bitmaps_.find(key);
-        if (it != thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
+        const auto it = state_.thumbnail_bitmaps_.find(key);
+        if (it != state_.thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
           TouchBitmap(&it->second);
           return {it->second.bitmap.Get(), it->second.width, it->second.height};
         }
@@ -443,8 +444,8 @@ void MainWindow::RenderListRow(
         return {};
       }
       const std::wstring key = ThumbnailKeyFromSummary(s);
-      const auto it = thumbnail_bitmaps_.find(key);
-      if (it != thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
+      const auto it = state_.thumbnail_bitmaps_.find(key);
+      if (it != state_.thumbnail_bitmaps_.end() && it->second.bitmap != nullptr) {
         TouchBitmap(&it->second);
         return {it->second.bitmap.Get(), it->second.width, it->second.height};
       }
@@ -463,13 +464,13 @@ void MainWindow::RenderDirtyRows(
     const RECT& list_rect,
     POINT hover,
     const core::store::AppSettings& render_settings) {
-  if (target == nullptr || dirty_rows_.empty()) {
+  if (target == nullptr || state_.dirty_rows_.empty()) {
     return;
   }
 
   target->PushAxisAlignedClip(ToRectF(list_rect), D2D1_ANTIALIAS_MODE_ALIASED);
   const float visual_scroll_offset = scroll_controller_->VisualScrollOffset();
-  for (int index : dirty_rows_) {
+  for (int index : state_.dirty_rows_) {
     const vlist::RowRect row_pos = vlist::RowRectFor(
         viewport_.heights(), index, static_cast<float>(list_rect.top), visual_scroll_offset);
     RECT row{
@@ -546,7 +547,7 @@ void MainWindow::RenderLiveResizeListSurface(
 
   target->PushAxisAlignedClip(ToRectF(list_rect), D2D1_ANTIALIAS_MODE_ALIASED);
 
-  if (item_count_ == 0) {
+  if (state_.item_count_ == 0) {
     RenderEmptyListGuidance(target, list_rect, render_settings);
     target->PopAxisAlignedClip();
     return;
@@ -557,24 +558,24 @@ void MainWindow::RenderLiveResizeListSurface(
   const vlist::VisibleRange live_range =
       viewport_.RangeAt(visual_scroll_offset, viewport_height, 0, 0);
   const int first_index = live_range.first;
-  const int last_index = std::min(item_count_ - 1, live_range.last);
-  const int first_page = first_index / page_size_;
-  const int last_page = last_index / page_size_;
+  const int last_index = std::min(state_.item_count_ - 1, live_range.last);
+  const int first_page = first_index / state_.page_size_;
+  const int last_page = last_index / state_.page_size_;
 
   for (int page = first_page; page <= last_page; ++page) {
-    auto page_it = page_cache_.find(page);
-    if (page_it == page_cache_.end()) {
+    auto page_it = state_.page_cache_.find(page);
+    if (page_it == state_.page_cache_.end()) {
       continue;
     }
 
     TouchPage(page);
-    const int start_offset = page == first_page ? (first_index % page_size_) : 0;
+    const int start_offset = page == first_page ? (first_index % state_.page_size_) : 0;
     const int end_offset = page == last_page
-        ? std::min(last_index % page_size_, static_cast<int>(page_it->second.size()) - 1)
+        ? std::min(last_index % state_.page_size_, static_cast<int>(page_it->second.size()) - 1)
         : static_cast<int>(page_it->second.size()) - 1;
 
     for (int offset = start_offset; offset <= end_offset; ++offset) {
-      const int index = page * page_size_ + offset;
+      const int index = page * state_.page_size_ + offset;
       const vlist::RowRect row_pos = vlist::RowRectFor(
           viewport_.heights(), index, static_cast<float>(list_rect.top), visual_scroll_offset);
       RECT row{
@@ -666,10 +667,10 @@ void MainWindow::RenderListSurface(
   const vlist::VisibleRange visible_range = viewport_.RangeAt(
       visual_scroll_offset, list_pixel_height, item_height * 2, item_height * 2);
   const int first_index = visible_range.first;
-  const int last_index = std::min(item_count_ - 1, visible_range.last);
+  const int last_index = std::min(state_.item_count_ - 1, visible_range.last);
   const bool use_drag_session = row_drag_active_ && row_drag_scope_ != ReorderScope::None && row_drag_session_.has_value();
   const int drag_insert_index = row_drag_active_
-      ? std::clamp(row_drop_index_ + (row_drop_after_ ? 1 : 0), 0, item_count_)
+      ? std::clamp(row_drop_index_ + (row_drop_after_ ? 1 : 0), 0, state_.item_count_)
       : -1;
   struct RenderRowEntry {
     int index = -1;
@@ -735,7 +736,7 @@ void MainWindow::RenderListSurface(
     RenderListRow(target, client, list_rect, row, index, hover, render_settings, collect_hits);
   }
 
-  if (row_drag_active_ && row_drag_item_index_ >= 0 && row_drag_item_index_ < item_count_) {
+  if (row_drag_active_ && row_drag_item_index_ >= 0 && row_drag_item_index_ < state_.item_count_) {
     D2D1_MATRIX_3X2_F old_transform;
     target->GetTransform(&old_transform);
     
@@ -765,7 +766,7 @@ void MainWindow::RenderListSurface(
     target->SetTransform(old_transform);
   }
 
-  if (item_count_ == 0) {
+  if (state_.item_count_ == 0) {
     RenderEmptyListGuidance(target, list_rect, render_settings);
   }
 
@@ -798,6 +799,11 @@ void MainWindow::RenderListSurface(
 }
 
 void MainWindow::RenderFrame() {
+  // 分段计时：单帧 94ms 远超 60Hz 预算（16.7ms）。setup/draw/present 三段分开记，
+  // 才能判断是「数据准备」还是「D2D 绘制」还是「Present 等垂直同步」在吃时间。
+  // 必须用 QPC：GetTickCount64 的 15.625ms 粒度会把每帧都量化成 0 或 16ms，
+  // 从而伪造出「Present 一直阻塞 16ms」的假象（实测真实值多在 0.5~2ms）。
+  common::Stopwatch rf_stopwatch;
   EnsureBitmapCachesValid();
   // C1 暗色模式：主题纪元变化时重建刷子并刷新 DWM 暗色属性与文本框颜色。
   if (d2d_shell_.SyncTheme()) {
@@ -809,6 +815,7 @@ void MainWindow::RenderFrame() {
   if (target == nullptr) {
     return;
   }
+  const std::int64_t rf_setup_us = rf_stopwatch.ElapsedUs();
 
   RECT client{};
   GetClientRect(hwnd_, &client);
@@ -818,7 +825,7 @@ void MainWindow::RenderFrame() {
   const PanelLayout layout = ComputeLayout(client.right, client.bottom);
   const POINT hover = hover_point_;
   const core::store::AppSettings render_settings =
-      controller_ != nullptr ? controller_->current_settings() : core::store::AppSettings{};
+      settings_store_ != nullptr ? settings_store_->current_settings() : core::store::AppSettings{};
   hit_regions_.clear();
   const bool secondary_text_formats_ready = d2d_shell_.secondary_text_formats_ready();
 
@@ -836,7 +843,9 @@ void MainWindow::RenderFrame() {
 
   target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
   float bg_alpha = 1.0f;
-  const auto& settings = controller_->current_settings();
+  // 复用上面已取的快照：原先这里又调了一次 current_settings()（每次拷贝一整份
+  // 设置并加锁），单帧白跑一次锁 + 一次深拷贝。
+  const auto& settings = render_settings;
   // C3 外观即时预览：设置窗拖动毛玻璃控件时未保存的值实时生效。
   const core::store::WindowBlurType blur_type = blur_preview_active_
       ? preview_blur_type_ : settings.window_blur_type;
@@ -1032,10 +1041,10 @@ void MainWindow::RenderFrame() {
     for (const auto& chip : browser_presentation.chips) {
       std::wstring chip_label = chip.label;
       if (chip.kind == core::browser::FilterChipKind::Tag && chip.id > 0) {
-        const auto tag_it = std::find_if(tags_.begin(), tags_.end(), [&chip](const core::store::TagRecord& tag) {
+        const auto tag_it = std::find_if(state_.tags_.begin(), state_.tags_.end(), [&chip](const core::store::TagRecord& tag) {
           return tag.id == chip.id;
         });
-        if (tag_it != tags_.end()) {
+        if (tag_it != state_.tags_.end()) {
           chip_label = L"\u6807\u7b7e: " + tag_it->name;
         }
       }
@@ -1126,27 +1135,27 @@ void MainWindow::RenderFrame() {
   static int last_queue_count = -1;
   static std::wstring last_status_text;
 
-  if (last_title != browser_presentation.title || last_item_count != item_count_) {
+  if (last_title != browser_presentation.title || last_item_count != state_.item_count_) {
     last_title = browser_presentation.title;
-    last_item_count = item_count_;
+    last_item_count = state_.item_count_;
     cached_left_status = browser_presentation.title;
     for (size_t chip_index = 0; chip_index < browser_presentation.chips.size() && chip_index < 2; ++chip_index) {
       cached_left_status += strings::kStatusSeparator;
       cached_left_status += browser_presentation.chips[chip_index].label;
     }
     cached_left_status += strings::kStatusTotalSummaryMiddle;
-    cached_left_status += GetCachedNumberString(item_count_);
+    cached_left_status += GetCachedNumberString(state_.item_count_);
     cached_left_status += strings::kStatusItemsSuffix;
   }
 
-  if (last_status_text != status_text_ || last_queue_count != queue_count_ || last_item_count != item_count_) {
-    last_status_text = status_text_;
-    last_queue_count = queue_count_;
-    last_item_count = item_count_;
-    cached_right_status = status_text_;
+  if (last_status_text != state_.status_text_ || last_queue_count != state_.queue_count_ || last_item_count != state_.item_count_) {
+    last_status_text = state_.status_text_;
+    last_queue_count = state_.queue_count_;
+    last_item_count = state_.item_count_;
+    cached_right_status = state_.status_text_;
     if (cached_right_status.empty()) {
-      cached_right_status = std::wstring(strings::kStatusQueueSummaryPrefix) + GetCachedNumberString(queue_count_) +
-                            strings::kStatusTotalSummaryMiddle + GetCachedNumberString(item_count_) + strings::kStatusItemsSuffix;
+      cached_right_status = std::wstring(strings::kStatusQueueSummaryPrefix) + GetCachedNumberString(state_.queue_count_) +
+                            strings::kStatusTotalSummaryMiddle + GetCachedNumberString(state_.item_count_) + strings::kStatusItemsSuffix;
     }
   }
 
@@ -1183,15 +1192,15 @@ void MainWindow::RenderFrame() {
   if (layout.drawer_width > 0) {
     target->FillRoundedRectangle(D2D1::RoundedRect(Inset(layout.drawer, 0.0f, 0.0f), 16.0f, 16.0f), d2d_shell_.surface_alt_brush());
     target->DrawRoundedRectangle(D2D1::RoundedRect(Inset(layout.drawer, 0.0f, 0.0f), 16.0f, 16.0f), d2d_shell_.border_brush(), 1.0f);
-    if (selected_clip_ && layout.drawer_actions.right > layout.drawer_actions.left) {
+    if (state_.selected_clip_ && layout.drawer_actions.right > layout.drawer_actions.left) {
       RECT close_rect{layout.drawer.right - 38, layout.drawer.top + 14, layout.drawer.right - 14, layout.drawer.top + 38};
       RECT fav_rect{layout.drawer.right - 120, layout.drawer.top + 14, layout.drawer.right - 96, layout.drawer.top + 38};
       RECT pin_rect{layout.drawer.right - 92, layout.drawer.top + 14, layout.drawer.right - 68, layout.drawer.top + 38};
       RECT del_rect{layout.drawer.right - 64, layout.drawer.top + 14, layout.drawer.right - 40, layout.drawer.top + 38};
       const RECT header_buttons[] = {fav_rect, pin_rect, del_rect, close_rect};
       const std::wstring header_icons[] = {
-          selected_clip_->summary.is_favorite ? L"\xE735" : L"\xE734",
-          selected_clip_->summary.is_pinned ? L"\xE840" : L"\xE718",
+          state_.selected_clip_->summary.is_favorite ? L"\xE735" : L"\xE734",
+          state_.selected_clip_->summary.is_pinned ? L"\xE840" : L"\xE718",
           L"\xE74D",
           L"\xE711"};
       const HitKind header_kinds[] = {HitKind::DrawerFavorite, HitKind::DrawerPinned, HitKind::DrawerDelete, HitKind::DrawerClose};
@@ -1204,39 +1213,39 @@ void MainWindow::RenderFrame() {
 
       RECT content_type_pill_rect{layout.drawer.left + 16, layout.drawer.top + 16, layout.drawer.left + 82, layout.drawer.top + 40};
       target->FillRoundedRectangle(D2D1::RoundedRect(Inset(content_type_pill_rect, 0.0f, 0.0f), 10.0f, 10.0f), d2d_shell_.accent_soft_brush());
-      DrawCachedCenteredText(&text_layout_cache_, d2d_shell_.dwrite_factory(), target, core::store::ToDisplayLabel(selected_clip_->summary.content_type), d2d_shell_.tiny_format(), d2d_shell_.accent_brush(), content_type_pill_rect);
+      DrawCachedCenteredText(&text_layout_cache_, d2d_shell_.dwrite_factory(), target, core::store::ToDisplayLabel(state_.selected_clip_->summary.content_type), d2d_shell_.tiny_format(), d2d_shell_.accent_brush(), content_type_pill_rect);
 
       RECT title_rect{layout.drawer.left + 16, layout.drawer.top + 52, layout.drawer.right - 16, layout.drawer.top + 80};
       RECT subtitle_rect{layout.drawer.left + 16, layout.drawer.top + 86, layout.drawer.right - 16, layout.drawer.top + 108};
-      const std::wstring title = SummaryTitle(selected_clip_->summary);
-      const std::wstring subtitle = FormatTimeLabel(selected_clip_->summary.updated_at) + L" \u00B7 " +
-          (selected_clip_->summary.source_app_name.empty() ? L"\u672A\u77E5\u6765\u6E90" : selected_clip_->summary.source_app_name);
+      const std::wstring title = SummaryTitle(state_.selected_clip_->summary);
+      const std::wstring subtitle = FormatTimeLabel(state_.selected_clip_->summary.updated_at) + L" \u00B7 " +
+          (state_.selected_clip_->summary.source_app_name.empty() ? L"\u672A\u77E5\u6765\u6E90" : state_.selected_clip_->summary.source_app_name);
       target->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), d2d_shell_.section_format(), ToRectF(title_rect), d2d_shell_.text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
       target->DrawTextW(subtitle.c_str(), static_cast<UINT32>(subtitle.size()), d2d_shell_.small_format(), ToRectF(subtitle_rect), d2d_shell_.muted_text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
       target->FillRoundedRectangle(D2D1::RoundedRect(Inset(layout.drawer_preview, 0.0f, 0.0f), 14.0f, 14.0f), d2d_shell_.surface_brush());
       target->DrawRoundedRectangle(D2D1::RoundedRect(Inset(layout.drawer_preview, 0.0f, 0.0f), 14.0f, 14.0f), d2d_shell_.border_brush(), 1.0f);
-      if (selected_clip_->summary.content_type == core::store::ClipContentType::Image) {
-        if (preview_bitmap_.bitmap != nullptr) {
+      if (state_.selected_clip_->summary.content_type == core::store::ClipContentType::Image) {
+        if (state_.preview_bitmap_.bitmap != nullptr) {
           const float available_width = static_cast<float>(layout.drawer_preview.right - layout.drawer_preview.left - 24);
           const float available_height = static_cast<float>(layout.drawer_preview.bottom - layout.drawer_preview.top - 24);
-          const float bitmap_width = static_cast<float>(preview_bitmap_.width);
-          const float bitmap_height = static_cast<float>(preview_bitmap_.height);
+          const float bitmap_width = static_cast<float>(state_.preview_bitmap_.width);
+          const float bitmap_height = static_cast<float>(state_.preview_bitmap_.height);
           const float scale = std::min(1.0f, std::min(available_width / bitmap_width, available_height / bitmap_height));
           const float draw_width = bitmap_width * scale;
           const float draw_height = bitmap_height * scale;
           const float left = layout.drawer_preview.left + (available_width - draw_width) * 0.5f + 12.0f;
           const float top = layout.drawer_preview.top + (available_height - draw_height) * 0.5f + 12.0f;
-          target->DrawBitmap(preview_bitmap_.bitmap.Get(), D2D1::RectF(left, top, left + draw_width, top + draw_height), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+          target->DrawBitmap(state_.preview_bitmap_.bitmap.Get(), D2D1::RectF(left, top, left + draw_width, top + draw_height), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         } else {
           DrawCachedCenteredText(&text_layout_cache_, d2d_shell_.dwrite_factory(), target, L"\xEB9F", d2d_shell_.title_format(), d2d_shell_.subtle_text_brush(), layout.drawer_preview);
         }
       } else {
         RECT text_rect{layout.drawer_preview.left + 16, layout.drawer_preview.top + 16, layout.drawer_preview.right - 16, layout.drawer_preview.bottom - 16};
         std::wstring body;
-        if (selected_clip_->summary.content_type == core::store::ClipContentType::Files) {
-          body = ToWide(selected_clip_->plain_text);
-        } else if (selected_clip_->summary.content_type == core::store::ClipContentType::Html) {
+        if (state_.selected_clip_->summary.content_type == core::store::ClipContentType::Files) {
+          body = ToWide(state_.selected_clip_->plain_text);
+        } else if (state_.selected_clip_->summary.content_type == core::store::ClipContentType::Html) {
           RECT toggle_preview{layout.drawer_preview.left + 16, layout.drawer_preview.top + 12, layout.drawer_preview.left + 74, layout.drawer_preview.top + 36};
           RECT toggle_source{layout.drawer_preview.left + 80, layout.drawer_preview.top + 12, layout.drawer_preview.left + 148, layout.drawer_preview.top + 36};
           for (int i = 0; i < 2; ++i) {
@@ -1248,9 +1257,9 @@ void MainWindow::RenderFrame() {
             hit_regions_.push_back(HitRegion{toggle_rect, HitKind::DrawerHtmlMode, i});
           }
           text_rect.top += 34;
-          body = show_html_source_ ? ToWide(selected_clip_->html_text) : ToWide(selected_clip_->plain_text);
+          body = show_html_source_ ? ToWide(state_.selected_clip_->html_text) : ToWide(state_.selected_clip_->plain_text);
         } else {
-          body = ToWide(selected_clip_->plain_text);
+          body = ToWide(state_.selected_clip_->plain_text);
         }
         target->DrawTextW(body.c_str(), static_cast<UINT32>(body.size()), d2d_shell_.small_format(), ToRectF(text_rect), d2d_shell_.text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
       }
@@ -1261,7 +1270,7 @@ void MainWindow::RenderFrame() {
       target->DrawTextW(L"\u53EF\u7528\u64CD\u4F5C", 4, d2d_shell_.body_bold_format(), ToRectF(actions_title), d2d_shell_.text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
       int action_left = layout.drawer_actions.left + 16;
       int action_top = layout.drawer_actions.top + 42;
-      for (const auto& action : actions_) {
+      for (const auto& action : state_.actions_) {
         const std::wstring label = ActionLabel(action);
         const int available_action_width =
             static_cast<int>(layout.drawer_actions.right - layout.drawer_actions.left - 32);
@@ -1288,7 +1297,7 @@ void MainWindow::RenderFrame() {
           DrawCachedCenteredText(&text_layout_cache_, d2d_shell_.dwrite_factory(), target, action.icon_token, d2d_shell_.icon_small_format(), d2d_shell_.accent_brush(), icon_rect);
         }
         target->DrawTextW(label.c_str(), static_cast<UINT32>(label.size()), d2d_shell_.tiny_format(), ToRectF(label_rect), d2d_shell_.text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-        hit_regions_.push_back(HitRegion{action_pill_rect, HitKind::DrawerAction, 0, selected_clip_->summary.id, action.id});
+        hit_regions_.push_back(HitRegion{action_pill_rect, HitKind::DrawerAction, 0, state_.selected_clip_->summary.id, action.id});
         action_left = action_pill_rect.right + 8;
       }
 
@@ -1297,22 +1306,22 @@ void MainWindow::RenderFrame() {
       RECT footer_title{layout.drawer_footer.left + 16, layout.drawer_footer.top + 14, layout.drawer_footer.right - 16, layout.drawer_footer.top + 36};
       RECT footer_body{layout.drawer_footer.left + 16, layout.drawer_footer.top + 42, layout.drawer_footer.right - 16, layout.drawer_footer.bottom - 16};
       target->DrawTextW(L"\u6765\u6E90\u4E0E\u8DEF\u5F84", 5, d2d_shell_.body_bold_format(), ToRectF(footer_title), d2d_shell_.text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-      std::wstring footer_text = selected_clip_->summary.source_app_name;
+      std::wstring footer_text = state_.selected_clip_->summary.source_app_name;
       if (!footer_text.empty()) {
         footer_text += L"\n";
       }
-      if (selected_clip_->summary.content_type == core::store::ClipContentType::Image) {
-        footer_text += selected_clip_->storage_path;
-      } else if (selected_clip_->summary.content_type == core::store::ClipContentType::Files) {
-        footer_text += FirstFilePathFromClip(*selected_clip_);
+      if (state_.selected_clip_->summary.content_type == core::store::ClipContentType::Image) {
+        footer_text += state_.selected_clip_->storage_path;
+      } else if (state_.selected_clip_->summary.content_type == core::store::ClipContentType::Files) {
+        footer_text += FirstFilePathFromClip(*state_.selected_clip_);
       } else {
-        footer_text += selected_clip_->summary.source_app_path;
+        footer_text += state_.selected_clip_->summary.source_app_path;
       }
       target->DrawTextW(footer_text.c_str(), static_cast<UINT32>(footer_text.size()), d2d_shell_.tiny_format(), ToRectF(footer_body), d2d_shell_.muted_text_brush(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
   }
 
-  if (item_count_ > 0) {
+  if (state_.item_count_ > 0) {
     const float list_height = static_cast<float>(layout.list.bottom - layout.list.top);
     const float content_height = static_cast<float>(viewport_.TotalHeight());
     if (content_height > list_height) {
@@ -1466,10 +1475,29 @@ void MainWindow::RenderFrame() {
     hit_regions_.push_back(HitRegion{overlay_dialog_.cancel_rect, HitKind::DialogCancel, 0});
   }
 
-  if (d2d_shell_.EndFrame1_1()) {
+  const std::int64_t rf_draw_us = rf_stopwatch.ElapsedUs() - rf_setup_us;
+  const std::size_t rf_dirty_rows = state_.dirty_rows_.size();
+  const bool presented = d2d_shell_.EndFrame1_1();
+  const std::int64_t rf_total_us = rf_stopwatch.ElapsedUs();
+  const std::int64_t rf_present_us = rf_total_us - rf_setup_us - rf_draw_us;
+  if (presented) {
     LayoutControls();
     // L5/L6:本帧已呈现,行内容脏标记清空(不清会让 has_pending_work 永真)。
-    dirty_rows_.clear();
+    state_.dirty_rows_.clear();
+  }
+  const std::size_t rf_hit_count = hit_regions_.size();
+  if (rf_total_us >= 16000) {
+    common::WriteLog(
+        common::LogLevel::Warning,
+        "ui.frame.slow",
+        "total_ms=" + common::FormatMs(rf_total_us) +
+            " setup_ms=" + common::FormatMs(rf_setup_us) +
+            " draw_ms=" + common::FormatMs(rf_draw_us) +
+            " present_ms=" + common::FormatMs(rf_present_us) +
+            " items=" + std::to_string(state_.item_count_) +
+            " dirty_rows=" + std::to_string(rf_dirty_rows) +
+            " hits=" + std::to_string(rf_hit_count) +
+            " h=" + std::to_string(window_height_));
   }
 }
 

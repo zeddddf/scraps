@@ -18,7 +18,6 @@
 #include "core/browser/BrowserCommand.h"
 #include "core/browser/BrowserState.h"
 #include "core/browser/ClipBrowserService.h"
-#include "core/commands/AppController.h"
 #include "core/commands/RefreshRequest.h"
 #include "core/store/ClipTypes.h"
 #include "platform/win32/HotkeySpec.h"
@@ -29,16 +28,27 @@
 #include "ui/DialogPanelWindow.h"
 #include "ui/HoverHintWindow.h"
 #include "ui/HistoryAssetLoader.h"
+#include "ui/HistoryViewState.h"
 #include "ui/ListScrollController.h"
 #include "ui/MainWindowTypes.h"
 #include "ui/HistoryDataController.h"
 #include "ui/PanelFocusCoordinator.h"
 #include "ui/PreviewWindow.h"
-#include "common/ThreadPool.h"
+#include "ui/WindowContract.h"
+#include "common/AsyncRunner.h"
 #include "ui/TextLayoutCache.h"
 #include "ui/UiStrings.h"
 #include "ui/vlist/VirtualListLayout.h"
 #include "ui/vlist/VirtualListViewport.h"
+
+namespace clipd2d::core::commands {
+class IHistoryFeed;
+class IPasteService;
+class ILibraryMutator;
+class ISettingsStore;
+class IMaintenance;
+struct AppServiceRefs;
+}  // namespace clipd2d::core::commands
 
 namespace clipd2d::ui {
 
@@ -48,7 +58,6 @@ class MainWindow : public ListScrollHost, public vlist::VirtualListSource {
 protected:
   // ListScrollHost
   int GetItemCount() const override;
-  int GetItemHeight() const override;
   int GetTotalContentHeight() const override;
   int GetViewportHeight() const override;
   void RequestRender() override;
@@ -74,13 +83,15 @@ public:
       HINSTANCE instance,
       int n_cmd_show,
       bool show_initial_panel_after_layout,
-      core::commands::AppController* controller,
+      const core::commands::AppServiceRefs& services,
       OpenSettingsCallback open_settings_callback,
       OwnedWindowPredicate owned_window_predicate);
   void Destroy();
   void RequestShowFromAnyThread() const;
   void RequestToggleFromAnyThread() const;
   void RequestRefreshFromAnyThread(core::commands::RefreshRequest request) const;
+  // 粘贴工作线程失败时调用：投递消息回主线程，由 UI 决定是否重新显示面板并提示。
+  void RequestPasteFailureFromAnyThread() const;
   void RequestRefreshPreserveViewport() const;
   void RequestRefreshForNewestClip(std::int64_t clip_id) const;
   void NotifySettingsWindowShown();
@@ -96,10 +107,85 @@ public:
 
   HWND hwnd() const { return hwnd_; }
 
- private:
-  friend class HistoryDataController;
-  friend class HistoryAssetLoader;
+  // ---------------------------------------------------------------------------
+  // History Controller 契约（A2b）：见 HistoryDataController/HistoryAssetLoader。
+  // 以下为两个 History Controller 依赖的最小 public 接口，不要随意扩大暴露面。
+  // ---------------------------------------------------------------------------
+  HistoryViewState& history_state() { return state_; }
+  common::AsyncRunner& history_pool() { return async_runner_; }
+  // 注意：MainWindow::Create 之后才非空（Controller 内已有判空）。
+  // 各分部 cpp 按用例取窄接口，别再引入 AppController*。
+  core::commands::IHistoryFeed* history_feed() const { return history_feed_; }
+  core::commands::IPasteService* paste_service() const { return paste_service_; }
+  core::commands::ILibraryMutator* library_mutator() const { return library_mutator_; }
+  core::commands::ISettingsStore* settings_store() const { return settings_store_; }
+  core::commands::IMaintenance* maintenance() const { return maintenance_; }
+  ListScrollController* scroll_controller() { return scroll_controller_.get(); }
+  D2dShell& d2d_shell() { return d2d_shell_; }
+  TextLayoutCache& text_layout_cache() { return text_layout_cache_; }
+  PreviewWindow& preview_window() { return preview_window_; }
+  bool drag_scrollbar_active() const { return drag_scrollbar_; }
+  bool deferred_page_request_pending() const { return deferred_page_request_pending_; }
+  void set_deferred_page_request_pending(bool value) { deferred_page_request_pending_ = value; }
+  std::uint64_t last_page_request_time_ms() const { return last_page_request_time_ms_; }
+  void set_last_page_request_time_ms(std::uint64_t value) { last_page_request_time_ms_ = value; }
+  bool startup_metadata_warmup_completed() const { return startup_metadata_warmup_completed_; }
+  void set_startup_metadata_warmup_completed(bool value) { startup_metadata_warmup_completed_ = value; }
+  void set_startup_metadata_warmup_requested(bool value) { startup_metadata_warmup_requested_ = value; }
+  bool preview_load_pending() const { return preview_load_pending_; }
+  void set_preview_load_pending(bool value) { preview_load_pending_ = value; }
+  void set_show_html_source(bool value) { show_html_source_ = value; }
+  void ResetThumbnailRequestWindow() {
+    last_thumbnail_request_first_index_ = -1;
+    last_thumbnail_request_last_index_ = -1;
+  }
+  void ResetBitmapCaches();
 
+  // Controller 结果回投消息号（A2b：Controller 经 PostOwnedMessage 回投 UI 线程）。
+  static constexpr UINT kCountReadyMessage = WM_APP + 102;
+  static constexpr UINT kPageReadyMessage = WM_APP + 103;
+  static constexpr UINT kClipReadyMessage = WM_APP + 104;
+  static constexpr UINT kPreviewReadyMessage = WM_APP + 106;
+  static constexpr UINT kThumbnailReadyMessage = WM_APP + 107;
+  static constexpr UINT kStartupMetadataReadyMessage = WM_APP + 116;
+  // 延迟页请求定时器（A2b：HistoryDataController 节流用）。
+  static constexpr UINT_PTR kDeferredPageRequestTimerId = 6;
+
+  // 以下方法由 private 区迁入：仅因 History Controller 调用（A2b 最小公开）。
+  void RefreshSettingsCache();
+  const core::store::ClipSummary* GetSelectedSummary() const;
+  core::store::ClipQuery BuildCurrentQuery() const;
+  // ListScrollHost override：HistoryDataController 需要行高，迁入 public（A2b）。
+  int GetItemHeight() const override;
+  std::unordered_set<int> BuildColdStartPresentationPages(
+      int item_count,
+      int scroll_target_offset,
+      int viewport_height) const;
+  void CommitStagingSnapshotIfReady();
+  void ScheduleListPresent();
+  void RefreshStatus(const std::wstring& text);
+  bool IsColdStartPresentationPending() const;
+  void TouchPage(int page_index);
+  void TrimPageCache();
+  void TouchBitmap(BitmapEntry* entry);
+  void TrimBitmapCaches();
+  void MarkDirtyRowsForImageKey(const std::wstring& key);
+  void RequestVisiblePages(bool include_thumbnails = true);
+  void RequestVisibleThumbnails();
+  void SyncViewportHeightsForPage(int page_index);
+  void LoadSelection();
+  // L5:置脏 + 合并调度帧泵(重复请求合并为一帧,不漏帧不重复帧)。
+  void MarkFrameDirty();
+  PreviewWindow::HostActions BuildPreviewHostActions();
+  visual_assets::ShellIconRequest BuildSourceIconRequest(
+      const core::store::ClipSummary& summary) const;
+  std::optional<visual_assets::ShellIconRequest> BuildFileItemIconRequest(
+      const core::store::ClipSummary& summary) const;
+  int GetFileThumbnailTargetExtent() const;
+  void RequestSourceIconAsync(const core::store::ClipSummary& summary);
+  void RequestFileItemIconAsync(const core::store::ClipSummary& summary);
+
+ private:
   // C3 外观即时预览态（设置窗打开期间未保存的毛玻璃值）。
   bool blur_preview_active_ = false;
   core::store::WindowBlurType preview_blur_type_ = core::store::WindowBlurType::Mica;
@@ -225,34 +311,9 @@ public:
     detail::InteractionGuardKind deferred_guard = detail::InteractionGuardKind::PopupMenu;
   };
 
-  struct BitmapEntry {
-    std::uint64_t generation = 0;
-    UINT width = 0;
-    UINT height = 0;
-    std::uint64_t last_used = 0;
-    Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
-  };
-
-  struct StagingSnapshot {
-    std::uint64_t generation = 0;
-    core::store::ClipQuery query;
-    core::commands::RefreshRequest request{};
-    bool active = false;
-    bool count_ready = false;
-    int item_count = 0;
-    int target_scroll_offset = 0;
-    std::unordered_map<int, std::vector<core::store::ClipSummary>> page_cache;
-    std::unordered_set<int> required_pages;
-  };
-
-  static constexpr UINT kShowWindowMessage = WM_APP + 100;
+  static constexpr UINT kShowWindowMessage = contract::kShowWindowMessage;
   static constexpr UINT kRefreshWindowMessage = WM_APP + 101;
-  static constexpr UINT kCountReadyMessage = WM_APP + 102;
-  static constexpr UINT kPageReadyMessage = WM_APP + 103;
-  static constexpr UINT kClipReadyMessage = WM_APP + 104;
   static constexpr UINT kIconReadyMessage = WM_APP + 105;
-  static constexpr UINT kPreviewReadyMessage = WM_APP + 106;
-  static constexpr UINT kThumbnailReadyMessage = WM_APP + 107;
   static constexpr UINT kSearchKeyMessage = WM_APP + 108;
   static constexpr UINT kInvokeDefaultPasteMessage = WM_APP + 109;
   static constexpr UINT kPresentListMessage = WM_APP + 110;
@@ -261,12 +322,13 @@ public:
   static constexpr UINT kHandleExternalPointerMessage = WM_APP + 113;
   static constexpr UINT kCommitPasteMessage = WM_APP + 114;
   static constexpr UINT kUpdatePasteTargetMessage = WM_APP + 115;
-  static constexpr UINT kStartupMetadataReadyMessage = WM_APP + 116;
   static constexpr UINT kWarmSecondaryD2dMessage = WM_APP + 117;
   static constexpr UINT kInstallAutoHideHooksMessage = WM_APP + 118;
   static constexpr UINT kApplyWindowBlurMessage = WM_APP + 119;
   // L5:帧泵——WM_PAINT 只置脏,渲染由该消息在主循环里完成(合并重复帧)。
   static constexpr UINT kFrameRenderMessage = WM_APP + 120;
+  // 异步粘贴失败回抛（paste worker 线程 PostMessage 回主线程）。无 payload。
+  static constexpr UINT kPasteFailedMessage = WM_APP + 121;
   // Q1:owned-message payload 的消息号区间(销毁前按此区间排空回收)。
   static constexpr UINT kOwnedMessageFirst = kShowWindowMessage;
   static constexpr UINT kOwnedMessageLast = kFrameRenderMessage;
@@ -275,7 +337,6 @@ public:
   static constexpr UINT_PTR kHiddenWorkingSetTrimTimerId = 3;
   static constexpr UINT_PTR kHiddenWarmupTimerId = 4;
   static constexpr UINT_PTR kDragDecayTimerId = 5;
-  static constexpr UINT_PTR kDeferredPageRequestTimerId = 6;
   static constexpr UINT_PTR kScrollBenchTimerId = 7;
   static constexpr UINT kHiddenCacheTrimDelayMs = 30000;
   static constexpr UINT kHiddenWorkingSetTrimDelayMs = 200000;
@@ -331,8 +392,6 @@ public:
   // 拖拽衰减、动画与骨架 shimmer、预览/缩略图加载中、延迟页请求挂起、拖拽 blur
   // 衰减。新增脏类型必须同步此清单——漏一项会导致"数据到了但列表不刷新"。
   bool has_pending_work() const;
-  // L5:置脏 + 合并调度帧泵(重复请求合并为一帧,不漏帧不重复帧)。
-  void MarkFrameDirty();
   void DrainPendingOwnedMessages();
   void EnsureBitmapCachesValid();
   void SaveWindowPlacementIfNeeded(bool include_position);
@@ -345,23 +404,10 @@ public:
   void RefreshData(const core::commands::RefreshRequest& request, RefreshDataMode mode = RefreshDataMode::Full);
   void UpdateScrollBar();
   void EnsureSelectionVisible();
-  bool IsColdStartPresentationPending() const;
-  std::unordered_set<int> BuildColdStartPresentationPages(
-      int item_count,
-      int scroll_target_offset,
-      int viewport_height) const;
-  void RequestVisiblePages(bool include_thumbnails = true);
-  void RequestVisibleThumbnails();
   void PrepareVisibleContentForPresentation();
   void WarmNeighborhoodPages();
   void SelectFirstItemIfNeeded();
-  void CommitStagingSnapshotIfReady();
-  void ScheduleListPresent();
   void InvalidateListRegion();
-  void TouchPage(int page_index);
-  void TrimPageCache();
-  void TouchBitmap(BitmapEntry* entry);
-  void TrimBitmapCaches();
   void ScheduleDeferredHiddenCacheTrim();
   void CancelDeferredHiddenCacheTrim();
   void RunDeferredHiddenCacheTrim();
@@ -376,7 +422,6 @@ public:
   void MarkAllVisibleRowsDirty();
   void MarkRowDirty(int index);
   void MarkRangeDirty(int start_index, int end_index);
-  void MarkDirtyRowsForImageKey(const std::wstring& key);
   void MarkDirtyRowsForShellIcon(
       visual_assets::ShellIconPurpose purpose,
       const std::wstring& source_path);
@@ -402,15 +447,8 @@ public:
   void RequestPageAsync(int page_index, std::uint64_t generation, const core::store::ClipQuery& query, bool urgent = false);
   void RequestSelectedClipAsync(std::int64_t clip_id);
   void RequestStartupMetadataAsync();
-  void RequestSourceIconAsync(const core::store::ClipSummary& summary);
-  void RequestFileItemIconAsync(const core::store::ClipSummary& summary);
   void RequestThumbnailAsync(const core::store::ClipSummary& summary);
   void RequestPreviewAsync(const core::store::ClipRecord& clip);
-  int GetFileThumbnailTargetExtent() const;
-  visual_assets::ShellIconRequest BuildSourceIconRequest(
-      const core::store::ClipSummary& summary) const;
-  std::optional<visual_assets::ShellIconRequest> BuildFileItemIconRequest(
-      const core::store::ClipSummary& summary) const;
 
   void HandleCountReady(WPARAM w_param, LPARAM l_param);
   void HandlePageReady(WPARAM w_param, LPARAM l_param);
@@ -496,16 +534,13 @@ public:
   bool PointInInteractiveRegion(POINT point) const;
   LRESULT HitTestNonClient(POINT screen_point) const;
 
-  core::store::ClipQuery BuildCurrentQuery() const;
   core::browser::BrowserState BuildBrowserState() const;
   void ApplyBrowserCommand(const core::browser::BrowserCommand& command);
   int GetCollapsedWidth() const;
   int GetExpandedWidth() const;
   int GetDrawerWidth() const;
   const core::store::ClipSummary* GetSummaryAt(int index);
-  const core::store::ClipSummary* GetSelectedSummary() const;
   void SelectIndex(int index, bool open_drawer);
-  void LoadSelection();
   void ToggleFavoriteSelected();
   void TogglePinnedSelected();
   void DeleteSelected();
@@ -513,7 +548,6 @@ public:
   void CopySelectedPath();
   void OpenSelectedPreview();
   common::Status EnsurePreviewWindowCreated();
-  PreviewWindow::HostActions BuildPreviewHostActions();
   void OpenSelectedWithDefaultApp();
   void OpenSelectedResolvedTarget();
   void PerformThirdPartySticker();
@@ -545,8 +579,6 @@ public:
   void PerformPlainTextPaste();
   void PerformActionById(const std::string& action_id);
   core::clipboard::PasteTargetContext CapturePasteTargetContext() const;
-  void RefreshStatus(const std::wstring& text);
-  void RefreshSettingsCache();
   bool ShouldShowThirdPartyStickerButton(const core::store::ClipSummary& summary) const;
   bool ShouldShowTimeGroupsInCurrentState() const;
 
@@ -563,45 +595,21 @@ public:
   HistoryDataController history_data_controller_;
   HistoryAssetLoader history_asset_loader_;
 
-  core::commands::AppController* controller_ = nullptr;
+  // 5 个窄接口指针（同一 AppController 实例的窄视图，见 AppController.Interfaces.h）。
+  core::commands::IHistoryFeed* history_feed_ = nullptr;
+  core::commands::IPasteService* paste_service_ = nullptr;
+  core::commands::ILibraryMutator* library_mutator_ = nullptr;
+  core::commands::ISettingsStore* settings_store_ = nullptr;
+  core::commands::IMaintenance* maintenance_ = nullptr;
   OpenSettingsCallback open_settings_callback_;
   OwnedWindowPredicate owned_window_predicate_;
   core::browser::ClipBrowserService browser_service_;
-  core::browser::BrowserState browser_state_;
-
-  core::store::ClipView current_view_ = core::store::ClipView::All;
-  std::int64_t current_group_id_ = 0;
-  std::wstring current_group_name_;
-  std::int64_t current_tag_id_ = 0;
-  std::wstring current_tag_name_;
-  core::store::DateRangeFilter current_date_range_ = core::store::DateRangeFilter::All;
-  int queue_count_ = 0;
-  std::wstring status_text_ = L"准备就绪";
-  std::optional<std::int64_t> pending_selected_clip_id_;
-  std::optional<std::int64_t> explicit_selected_clip_id_;
-  std::optional<core::commands::RefreshRequest> pending_refresh_request_;
-
-  core::store::ClipQuery display_query_;
-  std::vector<std::wstring> display_query_tokens_;
-  std::vector<core::store::GroupRecord> groups_;
-  std::vector<core::store::TagRecord> tags_;
-  std::vector<core::actions::ActionDescriptor> actions_;
-  std::optional<core::store::ClipRecord> selected_clip_;
-  std::unordered_map<int, std::vector<core::store::ClipSummary>> page_cache_;
-  std::unordered_set<std::uint64_t> pending_page_request_keys_;
-  std::unordered_map<std::wstring, std::uint64_t> pending_thumbnail_generations_;
-  std::unordered_map<std::wstring, BitmapEntry> thumbnail_bitmaps_;
-  BitmapEntry preview_bitmap_;
-  std::unordered_map<int, std::uint64_t> page_access_ticks_;
-  std::uint64_t page_access_tick_ = 0;
-  std::uint64_t bitmap_access_tick_ = 0;
-  std::unordered_set<int> dirty_rows_;
+  HistoryViewState state_;
   std::vector<HitRegion> list_hit_regions_;
   TextLayoutCache text_layout_cache_;
-  common::ThreadPool thread_pool_{4};
+  common::AsyncRunner async_runner_{4};
 
   std::vector<HitRegion> hit_regions_;
-  StagingSnapshot staging_snapshot_;
   POINT hover_point_{-1, -1};
   struct StaticPressState {
     HitRegion hit{};
@@ -637,15 +645,10 @@ public:
   std::wstring resize_search_text_;
   OverlayDialogState overlay_dialog_{};
 
-  int item_count_ = 0;
-  int page_size_ = 128;
-  int selected_index_ = -1;
-
   // Variable-height virtualized list (see docs/plans/virtual-list-port.md).
   vlist::VirtualListViewport viewport_;
   int viewport_content_width_ = 400;
   void RebuildViewportHeights();
-  void SyncViewportHeightsForPage(int page_index);
   void ApplyViewportScrollAnchorDelta(int delta);
   // --bench-scroll harness (MainWindow.bench.cpp): scripted scroll/thumb-drag
   // sweep that measures frame cost, skeleton exposure and mapping accuracy.
@@ -672,13 +675,6 @@ public:
   HHOOK mouse_hook_ = nullptr;
   HHOOK keyboard_hook_ = nullptr;
   bool panel_allows_activation_ = false;
-  std::atomic<std::uint64_t> refresh_generation_{0};
-  std::atomic<std::uint64_t> clip_generation_{0};
-  std::uint64_t preview_generation_ = 0;
-  std::uint64_t thumbnail_request_epoch_ = 0;
-  std::uint64_t bitmap_generation_ = 0;
-  std::atomic<std::uint64_t> display_generation_{0};
-  std::atomic<std::uint64_t> active_thumbnail_request_epoch_{0};
   int last_thumbnail_request_first_index_ = -1;
   int last_thumbnail_request_last_index_ = -1;
   detail::InteractionGuardState interaction_guard_state_{};

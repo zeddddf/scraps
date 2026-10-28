@@ -25,6 +25,27 @@ enum class Section {
   About,
 };
 
+// 节标题（导航 / 搜索结果 / 悬停提示共用）。
+inline const wchar_t* SectionTitle(Section section) {
+  switch (section) {
+    case Section::General:
+      return L"常规";
+    case Section::Appearance:
+      return L"外观";
+    case Section::Hotkey:
+      return L"快捷键";
+    case Section::Clipboard:
+      return L"剪贴板";
+    case Section::Filter:
+      return L"过滤";
+    case Section::Data:
+      return L"数据管理";
+    case Section::About:
+      return L"关于";
+  }
+  return L"";
+}
+
 enum class FieldId {
   None = 0,
   Search,

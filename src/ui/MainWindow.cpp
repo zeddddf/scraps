@@ -1,9 +1,10 @@
 #include "ui/MainWindowInternal.h"
-#include "app/StartupTrace.h"
+#include "common/StartupTrace.h"
 #include "common/AppIcon.h"
 #include <psapi.h>
 #include "ui/ClipVisualAssets.h"
 #include "ui/PanelWindowChrome.h"
+#include "core/commands/AppController.Interfaces.h"
 
 namespace clipd2d::ui {
 
@@ -22,7 +23,7 @@ constexpr wchar_t kSearchClearGlyph[] = L"\u00D7";
 }
 
 const wchar_t* MainWindow::WindowClassName() {
-  return kMainWindowClassName;
+  return contract::kMainWindowClassName;
 }
 
 UINT MainWindow::ShowWindowMessageId() {
@@ -37,11 +38,15 @@ common::Status MainWindow::Create(
     HINSTANCE instance,
     int n_cmd_show,
     bool show_initial_panel_after_layout,
-    core::commands::AppController* controller,
+    const core::commands::AppServiceRefs& services,
     OpenSettingsCallback open_settings_callback,
     OwnedWindowPredicate owned_window_predicate) {
   instance_ = instance;
-  controller_ = controller;
+  history_feed_ = services.history;
+  paste_service_ = services.paste;
+  library_mutator_ = services.library;
+  settings_store_ = services.settings;
+  maintenance_ = services.maintenance;
   open_settings_callback_ = std::move(open_settings_callback);
   owned_window_predicate_ = std::move(owned_window_predicate);
   QueryPerformanceFrequency(&performance_counter_frequency_);
@@ -55,7 +60,7 @@ common::Status MainWindow::Create(
   window_class.hIcon = clipd2d::common::LoadAppIcon();
   window_class.hIconSm = clipd2d::common::LoadAppIcon();
   window_class.hbrBackground = nullptr;
-  window_class.lpszClassName = kMainWindowClassName;
+  window_class.lpszClassName = contract::kMainWindowClassName;
   RegisterClassExW(&window_class);
 
   dummy_owner_ = CreateWindowExW(
@@ -63,7 +68,7 @@ common::Status MainWindow::Create(
 
   hwnd_ = CreateWindowExW(
       kPopupPanelWindowExStyle,
-      kMainWindowClassName,
+      contract::kMainWindowClassName,
       L"Scraps",
       kPopupPanelWindowStyle,
       CW_USEDEFAULT,
@@ -78,21 +83,21 @@ common::Status MainWindow::Create(
     return common::Status::Error(common::StatusCode::PlatformError, "Create main window failed.");
   }
 
-  clipd2d::app::MarkStartupPhase("main_window_hwnd_ready");
+  clipd2d::common::MarkStartupPhase("main_window_hwnd_ready");
 
   common::Status status = d2d_shell_.InitializeDComp(hwnd_);
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("main_window_d2d_ready");
+  clipd2d::common::MarkStartupPhase("main_window_d2d_ready");
   status = CreateControls();
   if (!status.ok()) {
     return status;
   }
-  clipd2d::app::MarkStartupPhase("main_window_controls_ready");
+  clipd2d::common::MarkStartupPhase("main_window_controls_ready");
   LayoutControls();
-  clipd2d::app::MarkStartupPhase("main_window_layout_ready");
-  clipd2d::app::MarkStartupPhase("main_window_fast_refresh_started");
+  clipd2d::common::MarkStartupPhase("main_window_layout_ready");
+  clipd2d::common::MarkStartupPhase("main_window_fast_refresh_started");
   pending_initial_show_ = n_cmd_show != SW_HIDE && show_initial_panel_after_layout;
   RefreshSettingsCache();
   RefreshData(false, RefreshDataMode::FastStartup);
@@ -102,7 +107,7 @@ common::Status MainWindow::Create(
   if (!IsWindowVisible(hwnd_)) {
     ShowWindow(hwnd_, SW_HIDE);
   }
-  clipd2d::app::MarkStartupPhase("main_window_create_complete");
+  clipd2d::common::MarkStartupPhase("main_window_create_complete");
   MaybeArmScrollBench();
   return common::Status::Ok();
 }
@@ -136,7 +141,7 @@ void MainWindow::Destroy() {
     KillTimer(hwnd_, kHiddenWorkingSetTrimTimerId);
     KillTimer(hwnd_, kHiddenWarmupTimerId);
   }
-  thread_pool_.Shutdown();
+  async_runner_.Shutdown();
   DrainPendingOwnedMessages();
   hover_hint_window_.Destroy();
   dialog_panel_window_.Destroy();
@@ -145,8 +150,8 @@ void MainWindow::Destroy() {
     DestroyWindow(tooltip_);
     tooltip_ = nullptr;
   }
-  preview_bitmap_.bitmap.Reset();
-  thumbnail_bitmaps_.clear();
+  state_.preview_bitmap_.bitmap.Reset();
+  state_.thumbnail_bitmaps_.clear();
   text_layout_cache_.Clear();
   d2d_shell_.Shutdown();
   if (hwnd_ != nullptr) {
@@ -164,7 +169,7 @@ void MainWindow::DrainPendingOwnedMessages() {
     return;
   }
   // Q1:窗口销毁前回收队列中尚未派发的 owned-message payload,封死"接收方漏处理
-  // 即泄漏"的路径。thread_pool_.Shutdown() 之后工作线程不再投递;任意线程的
+  // 即泄漏"的路径。async_runner_.Shutdown() 之后工作线程不再投递;任意线程的
   // RequestRefreshFromAnyThread 仍有极窄的竞态窗口(见实施报告遗留风险)。
   MSG msg{};
   while (PeekMessageW(&msg, hwnd_, kOwnedMessageFirst, kOwnedMessageLast, PM_REMOVE)) {
@@ -208,6 +213,13 @@ void MainWindow::RequestToggleFromAnyThread() const {
   if (hwnd_ != nullptr) {
     PostMessageW(hwnd_, kToggleWindowMessage, 0, 0);
   }
+}
+
+void MainWindow::RequestPasteFailureFromAnyThread() const {
+  if (hwnd_ == nullptr) {
+    return;
+  }
+  (void)PostMessageW(hwnd_, kPasteFailedMessage, 0, 0);
 }
 
 void MainWindow::RequestRefreshFromAnyThread(core::commands::RefreshRequest request) const {
@@ -307,7 +319,7 @@ common::Status MainWindow::CreateControls() {
 void MainWindow::HandleSystemThemeChange() {
   // C1：跟随系统主题 —— 收到系统深浅色变化（ImmersiveColorSet）时重算全局主题。
   const core::store::AppSettings settings =
-      controller_ != nullptr ? controller_->current_settings() : core::store::AppSettings{};
+      settings_store_ != nullptr ? settings_store_->current_settings() : core::store::AppSettings{};
   if (settings.theme != core::store::ThemeMode::System) {
     return;
   }
@@ -329,8 +341,8 @@ void MainWindow::ClearBlurPreview() {
     return;
   }
   blur_preview_active_ = false;
-  const core::store::WindowBlurType saved = controller_ != nullptr
-      ? controller_->current_settings().window_blur_type
+  const core::store::WindowBlurType saved = settings_store_ != nullptr
+      ? settings_store_->current_settings().window_blur_type
       : core::store::WindowBlurType::Mica;
   ApplyWindowBlur(hwnd_, saved);
   InvalidateRect(hwnd_, nullptr, FALSE);
@@ -349,35 +361,35 @@ common::Status MainWindow::EnsurePreviewWindowCreated() {
 PreviewWindow::HostActions MainWindow::BuildPreviewHostActions() {
   PreviewWindow::HostActions actions;
   actions.on_request_ocr = [this](std::int64_t clip_id, bool force_rerun) {
-    if (controller_ == nullptr) {
+    if (maintenance_ == nullptr) {
       return common::Status::Error(common::StatusCode::Unavailable, "OCR controller is unavailable.");
     }
-    return controller_->RequestImageOcr(clip_id, force_rerun);
+    return maintenance_->RequestImageOcr(clip_id, force_rerun);
   };
   actions.on_copy_ocr_text = [this](std::int64_t clip_id) {
-    if (controller_ == nullptr) {
+    if (paste_service_ == nullptr) {
       return common::Status::Error(common::StatusCode::Unavailable, "OCR controller is unavailable.");
     }
-    return controller_->CopyOcrTextById(clip_id);
+    return paste_service_->CopyOcrTextById(clip_id);
   };
   actions.on_paste_ocr_text = [this](std::int64_t clip_id) {
-    if (controller_ == nullptr) {
+    if (paste_service_ == nullptr) {
       return common::Status::Error(common::StatusCode::Unavailable, "OCR controller is unavailable.");
     }
     const core::clipboard::PasteTargetContext target_context = CapturePasteTargetContext();
     const core::clipboard::PasteRoute route = paste_route_requires_recovery_
         ? core::clipboard::PasteRoute::Recovery
         : core::clipboard::PasteRoute::Fast;
-    return controller_->PasteOcrTextById(clip_id, target_context, route);
+    return paste_service_->PasteOcrTextById(clip_id, target_context, route);
   };
   actions.query_ocr_provider_status = [this](std::wstring* message) {
-    if (controller_ == nullptr) {
+    if (maintenance_ == nullptr) {
       if (message != nullptr) {
         *message = L"OCR controller is unavailable.";
       }
       return common::Status::Error(common::StatusCode::Unavailable, "OCR controller is unavailable.");
     }
-    return controller_->GetImageOcrProviderStatus(message);
+    return maintenance_->GetImageOcrProviderStatus(message);
   };
   actions.on_show = [this]() {
     NotifyPreviewWindowShown();
@@ -448,7 +460,7 @@ void MainWindow::UpdateRoundedRegion() {
 }
 
 void MainWindow::SaveWindowPlacementIfNeeded(bool include_position) {
-  if (controller_ == nullptr || hwnd_ == nullptr) {
+  if (settings_store_ == nullptr || hwnd_ == nullptr) {
     return;
   }
   RECT window_rect{};
@@ -456,7 +468,7 @@ void MainWindow::SaveWindowPlacementIfNeeded(bool include_position) {
     return;
   }
 
-  core::store::AppSettings settings = controller_->current_settings();
+  core::store::AppSettings settings = settings_store_->current_settings();
   settings.saved_window_width = std::max(kMinWindowWidth, static_cast<int>(window_rect.right - window_rect.left));
   settings.saved_window_height = std::max(kMinWindowHeight, static_cast<int>(window_rect.bottom - window_rect.top));
   settings.has_saved_window_size = true;
@@ -465,7 +477,7 @@ void MainWindow::SaveWindowPlacementIfNeeded(bool include_position) {
     settings.saved_window_y = window_rect.top;
     settings.has_saved_window_position = true;
   }
-  controller_->SaveSettings(settings);
+  settings_store_->SaveSettings(settings);
 }
 
 POINT MainWindow::ComputeFollowMouseOrigin(int width, int height) const {
@@ -510,7 +522,7 @@ void MainWindow::ShowAndActivate(bool refresh_data) {
       "ShowAndActivate begin refresh_data=" + std::string(refresh_data ? "true" : "false") +
           " visible=" + std::string(IsWindowVisible(hwnd_) ? "true" : "false") +
           " panel_locked=" + std::string(panel_locked_ ? "true" : "false"));
-  const core::store::AppSettings settings = controller_ != nullptr ? controller_->current_settings() : core::store::AppSettings{};
+  const core::store::AppSettings settings = settings_store_ != nullptr ? settings_store_->current_settings() : core::store::AppSettings{};
   RefreshSettingsCache();
   platform::win32::HotkeySpec local_hotkey{};
   if (platform::win32::ParseLocalHotkeyText(settings.search_focus_hotkey, &local_hotkey).ok()) {
@@ -545,7 +557,7 @@ void MainWindow::ShowAndActivate(bool refresh_data) {
 }
 
 void MainWindow::PrepareWindowPlacementForShow() {
-  const core::store::AppSettings settings = controller_ != nullptr ? controller_->current_settings() : core::store::AppSettings{};
+  const core::store::AppSettings settings = settings_store_ != nullptr ? settings_store_->current_settings() : core::store::AppSettings{};
   window_width_ = settings.has_saved_window_size ? std::max(kMinWindowWidth, settings.saved_window_width) : kDefaultWindowWidth;
   window_height_ = settings.has_saved_window_size ? std::max(kMinWindowHeight, settings.saved_window_height) : kDefaultWindowHeight;
   if (settings.window_position_mode == core::store::WindowPositionMode::Remember && settings.has_saved_window_position) {
@@ -602,7 +614,7 @@ void MainWindow::PresentPreparedWindow(bool focus_search_on_open, bool suppress_
 }
 
 void MainWindow::RefreshSettingsCache() {
-  const core::store::AppSettings settings = controller_ != nullptr ? controller_->current_settings() : core::store::AppSettings{};
+  const core::store::AppSettings settings = settings_store_ != nullptr ? settings_store_->current_settings() : core::store::AppSettings{};
   third_party_sticker_enabled_ = settings.third_party_sticker_enabled;
   third_party_sticker_hotkey_valid_ = false;
   third_party_sticker_hotkey_ = {};
@@ -1065,7 +1077,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
       if (d2d_shell_.hwnd() != nullptr) {
         d2d_shell_.Resize(LOWORD(l_param), HIWORD(l_param));
       }
-      dirty_rows_.clear();
+      state_.dirty_rows_.clear();
       LayoutControls();
       {
         // Width changes re-wrap row text — re-measure row heights.
@@ -1099,7 +1111,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
 
     case WM_EXITSIZEMOVE:
       in_live_resize_ = false;
-      dirty_rows_.clear();
+      state_.dirty_rows_.clear();
       LayoutControls();
       if (search_edit_had_focus_) {
         search_textbox_.SetFocused(true, hwnd_);
@@ -1127,7 +1139,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
       SetWindowPos(hwnd_, nullptr, suggested_rect->left, suggested_rect->top, suggested_rect->right - suggested_rect->left, suggested_rect->bottom - suggested_rect->top, SWP_NOZORDER | SWP_NOACTIVATE);
       frame_interval_ms_ = std::max<UINT>(4, static_cast<UINT>(std::lround(1000.0 / DetectRefreshRateHz(hwnd_))));
       // 行高/布局缓存重建:文本布局按像素宽分桶,换屏后桶宽已失效。
-      dirty_rows_.clear();
+      state_.dirty_rows_.clear();
       text_layout_cache_.Clear();
       RebuildViewportHeights();
       LayoutControls();
@@ -1314,7 +1326,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
         const int released_index = RowIndexAtPoint(pt);
         const int armed_index = armed_click_item_index_;
         armed_click_item_index_ = -1;
-        if (released_index == armed_index && selected_index_ == armed_index) {
+        if (released_index == armed_index && state_.selected_index_ == armed_index) {
           PostMessageW(hwnd_, kInvokeDefaultPasteMessage, 0, 0);
         }
       } else {
@@ -1482,10 +1494,10 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
       core::commands::RefreshRequest effective_request = request != nullptr
           ? *request
           : core::commands::MakePreserveViewportRefreshRequest();
-      if (pending_refresh_request_.has_value()) {
-        effective_request = core::commands::MergeRefreshRequest(*pending_refresh_request_, effective_request);
+      if (state_.pending_refresh_request_.has_value()) {
+        effective_request = core::commands::MergeRefreshRequest(*state_.pending_refresh_request_, effective_request);
       }
-      pending_refresh_request_ = effective_request;
+      state_.pending_refresh_request_ = effective_request;
       RefreshData(effective_request);
       return 0;
     }
@@ -1512,6 +1524,14 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
     case kCommitPasteMessage:
       CommitPendingPasteRequest();
       return 0;
+    case kPasteFailedMessage:
+      // 粘贴事务在 worker 线程失败（目标窗口已消失等）：面板此前已隐藏，这里补上
+      // 与同步时代等价的用户可见反馈。
+      if (!panel_locked_ && !IsWindowVisible(hwnd_)) {
+        ShowAndActivate();
+      }
+      RefreshStatus(L"\u7c98\u8d34\u5931\u8d25");
+      return 0;
     case kPresentListMessage:
       list_present_scheduled_ = false;
       InvalidateListRegion();
@@ -1520,8 +1540,18 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
       // L5 帧泵:置脏后由主循环渲染(不在 WM_PAINT 里画)。frame_render_scheduled_
       // 合并重复调度,一次置脏只出一帧:不漏帧、不重复帧。
       frame_render_scheduled_ = false;
+      // 不可见不渲染：实测单帧最高 94ms。面板隐藏后（最典型的就是「粘贴」把面板
+      // 收起来那一刻）继续泵帧，只会和粘贴入队、分页应用等消息抢同一条 UI 线程，
+      // 这正是「粘贴还是卡」的形态之一——UI 在画一个用户根本看不见的面板。
+      // 脏标记保留不清，重新显示时由 ShowAndActivate/Invalidate 补一帧。
+      if (!IsWindowVisible(hwnd_)) {
+        return 0;
+      }
       if (frame_dirty_) {
         frame_dirty_ = false;
+        // 计时与慢帧日志在 RenderFrame() 内部（按 setup/draw/present 分段），
+        // 这里不再重复包一层——否则同一帧会产生两条 ui.frame.slow，且外层用
+        // GetTickCount64 计时会被 15.625ms 粒度量化成假的 16ms。
         RenderFrame();
       }
       // L6:仍有持续工作(滚动物理/拖拽衰减/骨架 shimmer)→ 交给动画定时器
@@ -1545,7 +1575,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
       return 0;
     case kWarmSecondaryD2dMessage:
       if (d2d_shell_.EnsureSecondaryTextFormats().ok()) {
-        dirty_rows_.clear();
+        state_.dirty_rows_.clear();
         InvalidateRect(hwnd_, nullptr, FALSE);
       }
       return 0;
@@ -1586,7 +1616,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
 }
 
 
-int MainWindow::GetItemCount() const { return item_count_; }
+int MainWindow::GetItemCount() const { return state_.item_count_; }
 
 int MainWindow::GetViewportHeight() const {
   RECT client{};

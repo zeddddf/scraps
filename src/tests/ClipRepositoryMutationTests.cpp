@@ -158,6 +158,42 @@ CLIPD2D_TEST(ClipRepositoryRejectsEmptyTextPayloadClip) {
   cleanup();
 }
 
+CLIPD2D_TEST(ClipRepositoryFinalizePendingImageKeepsHistoryPosition) {
+  // 回归：图片 ingest 补全曾经无条件刷 updated_at，把刚落位的条目顶到列表首位
+  // （用户可见症状：图片粘贴完跳到第一位）。位置只能由到达时的 InsertClip 决定。
+  const auto temp_dir = clipd2d::tests::CreateUniqueTempDirectory(L"cliprepo-finalize-position");
+  auto cleanup = [&]() { clipd2d::tests::DeleteDirectoryIfExists(temp_dir); };
+  ClipRepository repo;
+  const AppPaths paths = MakeTempAppPaths(temp_dir);
+  CLIPD2D_CHECK(repo.Initialize(paths).ok());
+  bool inserted = false;
+  std::int64_t clip_id = 0;
+  CLIPD2D_CHECK(repo.InsertClip(
+                    MakePendingImageClip(temp_dir / L"storage" / L"images"),
+                    ReuseTouchPolicy::KeepPositionOnReuse,
+                    &inserted,
+                    &clip_id)
+                    .ok());
+  CLIPD2D_CHECK(inserted);
+  ClipRecord before;
+  CLIPD2D_CHECK(repo.GetClipDetailsById(clip_id, &before).ok());
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  CLIPD2D_CHECK(repo.FinalizePendingImageClip(
+                    clip_id,
+                    "readyhash",
+                    (temp_dir / L"storage" / L"images" / L"ready.png").wstring(),
+                    (temp_dir / L"storage" / L"images" / L"ready_thumb.png").wstring(),
+                    (temp_dir / L"storage" / L"images" / L"ready_preview.png").wstring(),
+                    20,
+                    20)
+                    .ok());
+  ClipRecord after;
+  CLIPD2D_CHECK(repo.GetClipDetailsById(clip_id, &after).ok());
+  cleanup();
+  CLIPD2D_CHECK_EQ(after.ingest_state, std::string("ready"));
+  CLIPD2D_CHECK_EQ(after.summary.updated_at, before.summary.updated_at);
+}
+
 CLIPD2D_TEST(ClipRepositoryRollsBackFailedFinalizePendingImage) {
   const auto temp_dir = clipd2d::tests::CreateUniqueTempDirectory(L"cliprepo-finalize");
   auto cleanup = [&]() { clipd2d::tests::DeleteDirectoryIfExists(temp_dir); };
@@ -549,6 +585,61 @@ CLIPD2D_TEST(ClipRepositoryGroupOrderAndTabPinStatePersist) {
   CLIPD2D_CHECK_EQ(groups[1].tab_sort_order, 20);
   CLIPD2D_CHECK(groups[2].tab_pinned);
   CLIPD2D_CHECK_EQ(groups[2].tab_sort_order, 10);
+
+  cleanup();
+}
+
+CLIPD2D_TEST(ClipRepositorySelfHealingRemovesStaleWalAfterRestore) {
+  // 回归：自愈在复制备份覆盖主库之后，必须清掉旁路文件（-wal/-shm）。
+  // 残留的 WAL 属于被替换掉的那份主库，SQLite 打开时会把它的页面回放到新主库上，
+  // 直接判定 "file is not a database" → 再自愈一次 → 一天 185 次的死循环。
+  const auto temp_dir = clipd2d::tests::CreateUniqueTempDirectory(L"cliprepo-self-healing-wal");
+  auto cleanup = [&]() { clipd2d::tests::DeleteDirectoryIfExists(temp_dir); };
+  const AppPaths paths = MakeTempAppPaths(temp_dir);
+
+  {
+    ClipRepository repo;
+    CLIPD2D_CHECK(repo.Initialize(paths).ok());
+    bool inserted = false;
+    std::int64_t clip_id = 0;
+    CLIPD2D_CHECK(
+        repo.InsertClip(MakeTextClip("survives-stale-wal"), ReuseTouchPolicy::PromoteOnReuse, &inserted, &clip_id).ok());
+    CLIPD2D_CHECK(repo.MaybeTriggerBackup(true).ok());
+  }
+  const std::wstring bak1 = paths.database_path + L".bak1";
+  CLIPD2D_CHECK(std::filesystem::exists(bak1));
+
+  // 破坏主库，并留下属于旧主库的旁路文件（模拟复制期间另一个连接写过剪贴板）。
+  constexpr const char* kStaleMarker = "STALE_WAL_FROM_PREVIOUS_DATABASE";
+  {
+    std::ofstream db_file(paths.database_path, std::ios::binary | std::ios::trunc);
+    db_file << "not a sqlite database";
+  }
+  {
+    std::ofstream wal_file(paths.database_path + L"-wal", std::ios::binary | std::ios::trunc);
+    wal_file << kStaleMarker;
+    std::ofstream shm_file(paths.database_path + L"-shm", std::ios::binary | std::ios::trunc);
+    shm_file << kStaleMarker;
+  }
+
+  {
+    ClipRepository repo;
+    CLIPD2D_CHECK(repo.Initialize(paths).ok());
+    std::int64_t count = -1;
+    CLIPD2D_CHECK(repo.CountClips(ClipQuery{}, &count).ok());
+    CLIPD2D_CHECK_EQ(count, 1);
+  }
+
+  // 旁路文件要么被删除，要么已被新的空 WAL 覆盖——总之不能再残留旧内容。
+  for (const wchar_t* suffix : {L"-wal", L"-shm"}) {
+    const std::filesystem::path sidecar = paths.database_path + suffix;
+    if (!std::filesystem::exists(sidecar)) {
+      continue;
+    }
+    const auto bytes = ReadFileBytes(sidecar);
+    const std::string content(bytes.begin(), bytes.end());
+    CLIPD2D_CHECK(content.find(kStaleMarker) == std::string::npos);
+  }
 
   cleanup();
 }

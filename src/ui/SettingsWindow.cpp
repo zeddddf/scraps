@@ -34,8 +34,8 @@ constexpr UINT kProxyTabMessage = WM_APP + 620;
 constexpr UINT kProxyEscapeMessage = WM_APP + 621;
 constexpr UINT kProxyCommitMessage = WM_APP + 622;
 
-// 搜索结果下拉的可见行数上限（超出时窗口随 ↑↓ 滚动）。
-constexpr int kMaxVisibleSearchHits = 6;
+// 搜索结果下拉的可见行数上限（超出时窗口随 ↑↓ 滚动）——唯一权威在
+// SettingsSearchController::kMaxVisibleHits，布局壳直接引用。
 
 // B1 导航分组：Section 索引 -> 组号；rail 模式下组间只留间距（无组标签）。
 constexpr int kNavGroupOf[7] = {0, 0, 1, 1, 1, 2, 2};  // 常规/外观 | 快捷键/剪贴板/过滤 | 数据/关于
@@ -45,25 +45,6 @@ float DpiScaleForWindow(HWND hwnd) {
   return static_cast<float>(dpi) / 96.0f;
 }
 
-const wchar_t* SectionTitle(Section section) {
-  switch (section) {
-    case Section::General:
-      return L"\u5e38\u89c4";
-    case Section::Appearance:
-      return L"\u5916\u89c2";
-    case Section::Hotkey:
-      return L"\u5feb\u6377\u952e";
-    case Section::Clipboard:
-      return L"\u526a\u8d34\u677f";
-    case Section::Filter:
-      return L"\u8fc7\u6ee4";
-    case Section::Data:
-      return L"\u6570\u636e\u7ba1\u7406";
-    case Section::About:
-      return L"\u5173\u4e8e";
-  }
-  return L"";
-}
 
 FluentIcon SectionIcon(Section section) {
   switch (section) {
@@ -85,14 +66,6 @@ FluentIcon SectionIcon(Section section) {
   return FluentIcon::Info;
 }
 
-bool ContainsInsensitive(std::wstring_view text, std::wstring_view query) {
-  if (query.empty()) {
-    return true;
-  }
-  const std::wstring lowered_text = common::ToLowerWide(text);
-  const std::wstring lowered_query = common::ToLowerWide(query);
-  return lowered_text.find(lowered_query) != std::wstring::npos;
-}
 
 bool IsModifierVirtualKey(UINT virtual_key) {
   switch (virtual_key) {
@@ -374,350 +347,11 @@ common::Status SettingsWindow::CreateInputProxies() {
 void SettingsWindow::DestroyInputProxies() {
 }
 
-void SettingsWindow::LoadDraftFromSettings(const core::store::AppSettings& settings) {
-  draft_.history_limit_text = std::to_wstring(settings.history_limit);
-  draft_.history_retention_days_text = std::to_wstring(settings.history_retention_days);
-  draft_.start_with_windows = settings.start_with_windows;
-  draft_.open_panel_on_first_run = settings.open_panel_on_first_run;
-  draft_.show_source_icon = settings.show_source_icon;
-  draft_.monitoring_enabled = settings.monitoring_enabled;
-  draft_.queue_auto_pop = settings.queue_auto_pop;
-  draft_.enable_win_v_override = settings.enable_win_v_override;
-  draft_.window_blur_type = settings.window_blur_type;
-  draft_.window_blur_opacity = settings.window_blur_opacity;
-  draft_.theme = settings.theme;
-  draft_.list_density = settings.list_density;
-  draft_.window_position_mode = settings.window_position_mode;
-  draft_.hotkey = settings.hotkey;
-  draft_.quick_paste_hotkey = settings.quick_paste_hotkey;
-  if (draft_.quick_paste_hotkey.empty()) {
-    draft_.quick_paste_hotkey = L"Alt+~";
-  }
-  draft_.focus_search_on_open = settings.focus_search_on_open;
-  draft_.search_focus_hotkey = settings.search_focus_hotkey;
-  if (draft_.search_focus_hotkey.empty()) {
-    draft_.search_focus_hotkey = L"Tab";
-  }
-  draft_.third_party_sticker_enabled = settings.third_party_sticker_enabled;
-  draft_.third_party_sticker_hotkey = settings.third_party_sticker_hotkey;
-  draft_.click_paste_mode = settings.click_paste_mode;
-  draft_.promote_pasted_clip_on_reuse = settings.promote_pasted_clip_on_reuse;
-  draft_.external_editor_path = settings.external_editor_path;
-  draft_.image_ocr_enabled = settings.image_ocr_enabled;
-  draft_.ocr_executable_path = settings.ocr_executable_path;
-  draft_.ocr_language_hint = settings.ocr_language_hint;
-  draft_.blacklist = settings.blacklist;
-  draft_.auto_ignore_password_managers = settings.auto_ignore_password_managers;
-  draft_.custom_blacklist_apps = settings.custom_blacklist_apps;
-  draft_.ignore_large_text = settings.ignore_large_text;
-  draft_.max_text_size_kb_text = std::to_wstring(settings.max_text_size_kb);
-  draft_.ignore_large_images = settings.ignore_large_images;
-  draft_.max_image_size_kb_text = std::to_wstring(settings.max_image_size_kb);
-  draft_.ignore_otp_codes = settings.ignore_otp_codes;
-  draft_.ignore_complex_passwords = settings.ignore_complex_passwords;
-  draft_.screenshot_enabled = settings.screenshot_enabled;
-  draft_.screenshot_prewarm = settings.screenshot_prewarm;
-  draft_.screenshot_hotkey = settings.screenshot_hotkey;
-}
-
-core::store::AppSettings SettingsWindow::BuildSettingsFromDraft() const {
-  core::store::AppSettings settings = current_settings_;
-  try {
-    settings.history_limit = std::max(1, std::stoi(draft_.history_limit_text));
-  } catch (...) {
-    settings.history_limit = current_settings_.history_limit;
-  }
-  try {
-    settings.history_retention_days = std::max(0, std::stoi(draft_.history_retention_days_text));
-  } catch (...) {
-    settings.history_retention_days = current_settings_.history_retention_days;
-  }
-  settings.start_with_windows = draft_.start_with_windows;
-  settings.open_panel_on_first_run = draft_.open_panel_on_first_run;
-  settings.show_source_icon = draft_.show_source_icon;
-  settings.monitoring_enabled = draft_.monitoring_enabled;
-  settings.queue_auto_pop = draft_.queue_auto_pop;
-  settings.enable_win_v_override = draft_.enable_win_v_override;
-  settings.window_blur_type = draft_.window_blur_type;
-  settings.window_blur_opacity = draft_.window_blur_opacity;
-  settings.theme = draft_.theme;
-  settings.list_density = draft_.list_density;
-  settings.window_position_mode = draft_.window_position_mode;
-  settings.hotkey = common::TrimWide(draft_.hotkey);
-  settings.quick_paste_hotkey = common::TrimWide(draft_.quick_paste_hotkey);
-  settings.focus_search_on_open = draft_.focus_search_on_open;
-  settings.search_focus_hotkey = common::TrimWide(draft_.search_focus_hotkey);
-  settings.third_party_sticker_enabled = draft_.third_party_sticker_enabled;
-  settings.third_party_sticker_hotkey = common::TrimWide(draft_.third_party_sticker_hotkey);
-  settings.click_paste_mode = draft_.click_paste_mode;
-  settings.promote_pasted_clip_on_reuse = draft_.promote_pasted_clip_on_reuse;
-  settings.external_editor_path = common::TrimWide(draft_.external_editor_path);
-  settings.image_ocr_enabled = draft_.image_ocr_enabled;
-  settings.ocr_executable_path = common::TrimWide(draft_.ocr_executable_path);
-  settings.ocr_language_hint = common::TrimWide(draft_.ocr_language_hint);
-  settings.blacklist = draft_.blacklist;
-  settings.auto_ignore_password_managers = draft_.auto_ignore_password_managers;
-  settings.custom_blacklist_apps = common::TrimWide(draft_.custom_blacklist_apps);
-  settings.ignore_large_text = draft_.ignore_large_text;
-  try {
-    settings.max_text_size_kb = std::max(1, std::stoi(draft_.max_text_size_kb_text));
-  } catch (...) {
-    settings.max_text_size_kb = current_settings_.max_text_size_kb;
-  }
-  settings.ignore_large_images = draft_.ignore_large_images;
-  try {
-    settings.max_image_size_kb = std::max(1, std::stoi(draft_.max_image_size_kb_text));
-  } catch (...) {
-    settings.max_image_size_kb = current_settings_.max_image_size_kb;
-  }
-  settings.ignore_otp_codes = draft_.ignore_otp_codes;
-  settings.ignore_complex_passwords = draft_.ignore_complex_passwords;
-  settings.screenshot_enabled = draft_.screenshot_enabled;
-  settings.screenshot_prewarm = draft_.screenshot_prewarm;
-  settings.screenshot_hotkey = common::TrimWide(draft_.screenshot_hotkey);
-  return settings;
-}
-
-bool SettingsWindow::ValidateDraft(std::wstring* error_message) const {
-  const std::wstring history_text = common::TrimWide(draft_.history_limit_text);
-  if (history_text.empty()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u8bf7\u8f93\u5165\u5408\u6cd5\u7684\u5386\u53f2\u8bb0\u5f55\u4e0a\u9650\u3002";
-    }
-    return false;
-  }
-
-  wchar_t* end = nullptr;
-  const long value = std::wcstol(history_text.c_str(), &end, 10);
-  if (end == history_text.c_str() || *end != L'\0' || value <= 0 || value > 500000) {
-    if (error_message != nullptr) {
-      *error_message = L"\u5386\u53f2\u8bb0\u5f55\u4e0a\u9650\u5fc5\u987b\u662f 1 \u5230 500000 \u4e4b\u95f4\u7684\u6574\u6570\u3002";
-    }
-    return false;
-  }
-
-  const std::wstring retention_text = common::TrimWide(draft_.history_retention_days_text);
-  if (retention_text.empty()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u8bf7\u8f93\u5165\u5408\u6cd5\u7684\u5386\u53f2\u4fdd\u7559\u5929\u6570\u3002";
-    }
-    return false;
-  }
-  end = nullptr;
-  const long retention_value = std::wcstol(retention_text.c_str(), &end, 10);
-  if (end == retention_text.c_str() || *end != L'\0' || retention_value < 0 || retention_value > 3650) {
-    if (error_message != nullptr) {
-      *error_message = L"\u5386\u53f2\u4fdd\u7559\u5929\u6570\u5fc5\u987b\u662f 0 \u5230 3650 \u4e4b\u95f4\u7684\u6574\u6570\u3002"; // 历史保留天数必须是 0 到 3650 之间的整数。
-    }
-    return false;
-  }
-
-  const std::wstring text_limit_text = common::TrimWide(draft_.max_text_size_kb_text);
-  if (draft_.ignore_large_text && text_limit_text.empty()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u8bf7\u8f93\u5165\u6700\u5927\u6587\u672c\u5927\u5c0f\u9650\u5236\u3002"; // 请输入最大文本大小限制。
-    }
-    return false;
-  }
-  if (draft_.ignore_large_text) {
-    end = nullptr;
-    const long limit_value = std::wcstol(text_limit_text.c_str(), &end, 10);
-    if (end == text_limit_text.c_str() || *end != L'\0' || limit_value < 1 || limit_value > 102400) {
-      if (error_message != nullptr) {
-        *error_message = L"\u6587\u672c\u5927\u5c0f\u9650\u5236\u5fc5\u987b\u662f 1 \u5230 102400 KB \u4e4b\u95f4\u7684\u6574\u6570\u3002"; // 文本大小限制必须是 1 到 102400 KB 之间的整数。
-      }
-      return false;
-    }
-  }
-
-  const std::wstring image_limit_text = common::TrimWide(draft_.max_image_size_kb_text);
-  if (draft_.ignore_large_images && image_limit_text.empty()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u8bf7\u8f93\u5165\u6700\u5927\u56fe\u7247\u5927\u5c0f\u9650\u5236\u3002"; // 请输入最大图片大小限制。
-    }
-    return false;
-  }
-  if (draft_.ignore_large_images) {
-    end = nullptr;
-    const long limit_value = std::wcstol(image_limit_text.c_str(), &end, 10);
-    if (end == image_limit_text.c_str() || *end != L'\0' || limit_value < 1 || limit_value > 102400) {
-      if (error_message != nullptr) {
-        *error_message = L"\u56fe\u7247\u5927\u5c0f\u9650\u5236\u5fc5\u987b\u662f 1 \u5230 102400 KB \u4e4b\u95f4\u7684\u6574\u6570\u3002"; // 图片大小限制必须是 1 到 102400 KB 之间的整数。
-      }
-      return false;
-    }
-  }
-
-  platform::win32::HotkeySpec global_hotkey;
-  if (!platform::win32::ParseHotkeyText(common::TrimWide(draft_.hotkey), &global_hotkey).ok()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u9762\u677f\u70ed\u952e\u683c\u5f0f\u65e0\u6548\uff0c\u793a\u4f8b\uff1aCtrl+Shift+V";
-    }
-    return false;
-  }
-
-  if (!platform::win32::ParseHotkeyText(common::TrimWide(draft_.quick_paste_hotkey), &global_hotkey).ok()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u5feb\u6377\u7c98\u8d34\u70ed\u952e\u65e0\u6548\uff0c\u793a\u4f8b\uff1aAlt+~";
-    }
-    return false;
-  }
-
-  if (!platform::win32::ParseHotkeyText(common::TrimWide(draft_.screenshot_hotkey), &global_hotkey).ok()) {
-    if (error_message != nullptr) {
-      *error_message = L"截图快捷键格式无效，示例：Win+Shift+S";
-    }
-    return false;
-  }
-
-  platform::win32::HotkeySpec local_hotkey;
-  if (!platform::win32::ParseLocalHotkeyText(common::TrimWide(draft_.search_focus_hotkey), &local_hotkey).ok()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u805a\u7126\u641c\u7d22\u6846\u5feb\u6377\u952e\u65e0\u6548\uff0c\u793a\u4f8b\uff1aTab \u6216 Ctrl+F";
-    }
-    return false;
-  }
-
-  const std::wstring sticker_hotkey_text = common::TrimWide(draft_.third_party_sticker_hotkey);
-  if (draft_.third_party_sticker_enabled && sticker_hotkey_text.empty()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u8bf7\u914d\u7f6e\u7b2c\u4e09\u65b9\u8d34\u56fe\u5feb\u6377\u952e\u3002";
-    }
-    return false;
-  }
-  if (!sticker_hotkey_text.empty() &&
-      !platform::win32::ParseLocalHotkeyText(sticker_hotkey_text, &local_hotkey).ok()) {
-    if (error_message != nullptr) {
-      *error_message = L"\u7b2c\u4e09\u65b9\u8d34\u56fe\u5feb\u6377\u952e\u65e0\u6548\uff0c\u793a\u4f8b\uff1aF2 \u6216 Ctrl+Shift+P";
-    }
-    return false;
-  }
-
-  return true;
-}
-
-bool SettingsWindow::IsSectionDirty(Section section, const core::store::AppSettings& next) const {
-  const core::store::AppSettings& cur = current_settings_;
-  switch (section) {
-    case Section::General:
-      return next.history_limit != cur.history_limit ||
-          next.history_retention_days != cur.history_retention_days ||
-          next.start_with_windows != cur.start_with_windows ||
-          next.open_panel_on_first_run != cur.open_panel_on_first_run ||
-          next.screenshot_enabled != cur.screenshot_enabled ||
-          next.screenshot_prewarm != cur.screenshot_prewarm;
-    case Section::Appearance:
-      return next.show_source_icon != cur.show_source_icon ||
-          next.list_density != cur.list_density ||
-          next.window_blur_type != cur.window_blur_type ||
-          next.window_blur_opacity != cur.window_blur_opacity ||
-          next.theme != cur.theme;
-    case Section::Hotkey:
-      return next.hotkey != cur.hotkey ||
-          next.quick_paste_hotkey != cur.quick_paste_hotkey ||
-          next.search_focus_hotkey != cur.search_focus_hotkey ||
-          next.third_party_sticker_enabled != cur.third_party_sticker_enabled ||
-          next.third_party_sticker_hotkey != cur.third_party_sticker_hotkey ||
-          next.screenshot_hotkey != cur.screenshot_hotkey;
-    case Section::Clipboard:
-      return next.monitoring_enabled != cur.monitoring_enabled ||
-          next.window_position_mode != cur.window_position_mode ||
-          next.focus_search_on_open != cur.focus_search_on_open ||
-          next.click_paste_mode != cur.click_paste_mode ||
-          next.promote_pasted_clip_on_reuse != cur.promote_pasted_clip_on_reuse ||
-          next.queue_auto_pop != cur.queue_auto_pop;
-    case Section::Filter:
-      return next.auto_ignore_password_managers != cur.auto_ignore_password_managers ||
-          next.ignore_otp_codes != cur.ignore_otp_codes ||
-          next.ignore_complex_passwords != cur.ignore_complex_passwords ||
-          next.ignore_large_text != cur.ignore_large_text ||
-          next.max_text_size_kb != cur.max_text_size_kb ||
-          next.ignore_large_images != cur.ignore_large_images ||
-          next.max_image_size_kb != cur.max_image_size_kb ||
-          next.blacklist != cur.blacklist ||
-          next.custom_blacklist_apps != cur.custom_blacklist_apps;
-    case Section::Data:
-      return next.external_editor_path != cur.external_editor_path ||
-          next.image_ocr_enabled != cur.image_ocr_enabled ||
-          next.ocr_executable_path != cur.ocr_executable_path ||
-          next.ocr_language_hint != cur.ocr_language_hint;
-    case Section::About:
-      return next.enable_win_v_override != cur.enable_win_v_override;
-  }
-  return false;
-}
-
-unsigned SettingsWindow::ComputeDirtyMask() const {
-  const core::store::AppSettings next = BuildSettingsFromDraft();
-  unsigned mask = 0;
-  for (int index = 0; index < 7; ++index) {
-    if (IsSectionDirty(static_cast<Section>(index), next)) {
-      mask |= (1u << index);
-    }
-  }
-  return mask;
-}
-
-bool SettingsWindow::IsDraftDirty() const {
-  return ComputeDirtyMask() != 0;
-}
 
 void SettingsWindow::ResetSectionToDefaults(Section section) {
+  // 编辑会话收尾是壳的事（EndEditing），纯重置规则在 SettingsDraftState。
   EndEditing(true);
-  const core::store::AppSettings d{};
-  switch (section) {
-    case Section::General:
-      draft_.history_limit_text = std::to_wstring(d.history_limit);
-      draft_.history_retention_days_text = std::to_wstring(d.history_retention_days);
-      draft_.start_with_windows = d.start_with_windows;
-      draft_.open_panel_on_first_run = d.open_panel_on_first_run;
-      draft_.screenshot_enabled = d.screenshot_enabled;
-      draft_.screenshot_prewarm = d.screenshot_prewarm;
-      break;
-    case Section::Appearance:
-      draft_.show_source_icon = d.show_source_icon;
-      draft_.list_density = d.list_density;
-      draft_.window_blur_type = d.window_blur_type;
-      draft_.window_blur_opacity = d.window_blur_opacity;
-      draft_.theme = d.theme;
-      break;
-    case Section::Hotkey:
-      draft_.hotkey = d.hotkey;
-      draft_.quick_paste_hotkey = d.quick_paste_hotkey;
-      draft_.search_focus_hotkey = d.search_focus_hotkey;
-      draft_.third_party_sticker_enabled = d.third_party_sticker_enabled;
-      draft_.third_party_sticker_hotkey = d.third_party_sticker_hotkey;
-      draft_.screenshot_hotkey = d.screenshot_hotkey;
-      break;
-    case Section::Clipboard:
-      draft_.monitoring_enabled = d.monitoring_enabled;
-      draft_.window_position_mode = d.window_position_mode;
-      draft_.focus_search_on_open = d.focus_search_on_open;
-      draft_.click_paste_mode = d.click_paste_mode;
-      draft_.promote_pasted_clip_on_reuse = d.promote_pasted_clip_on_reuse;
-      draft_.queue_auto_pop = d.queue_auto_pop;
-      break;
-    case Section::Filter:
-      draft_.auto_ignore_password_managers = d.auto_ignore_password_managers;
-      draft_.ignore_otp_codes = d.ignore_otp_codes;
-      draft_.ignore_complex_passwords = d.ignore_complex_passwords;
-      draft_.ignore_large_text = d.ignore_large_text;
-      draft_.max_text_size_kb_text = std::to_wstring(d.max_text_size_kb);
-      draft_.ignore_large_images = d.ignore_large_images;
-      draft_.max_image_size_kb_text = std::to_wstring(d.max_image_size_kb);
-      draft_.blacklist = d.blacklist;
-      draft_.custom_blacklist_apps = d.custom_blacklist_apps;
-      break;
-    case Section::Data:
-      draft_.external_editor_path = d.external_editor_path;
-      draft_.image_ocr_enabled = d.image_ocr_enabled;
-      draft_.ocr_executable_path = d.ocr_executable_path;
-      draft_.ocr_language_hint = d.ocr_language_hint;
-      break;
-    case Section::About:
-      draft_.enable_win_v_override = d.enable_win_v_override;
-      break;
-  }
+  draft_state_.ResetSectionToDefaults(section);
 }
 
 void SettingsWindow::RefreshStats() {
@@ -740,139 +374,73 @@ void SettingsWindow::ClearStatus() {
   status_persistent_ = false;
 }
 
-void SettingsWindow::UpdateSearchSelection() {
-  const std::wstring query = common::TrimWide(search_text_);
-  if (query.empty()) {
-    return;
-  }
-
-  constexpr std::array<Section, 7> kSections = {
-      Section::General,
-      Section::Appearance,
-      Section::Hotkey,
-      Section::Clipboard,
-      Section::Filter,
-      Section::Data,
-      Section::About};
-  constexpr std::array<const wchar_t*, 7> kKeywords = {
-      L"\u5e38\u89c4 \u5386\u53f2 \u5f00\u673a",
-      L"\u5916\u89c2 \u5bc6\u5ea6 \u56fe\u6807",
-      L"\u5feb\u6377\u952e \u70ed\u952e \u641c\u7d22",
-      L"\u526a\u8d34\u677f \u76d1\u542c \u4f4d\u7f6e \u7c98\u8d34",
-      L"\u8fc7\u6ee4 \u9ed1\u540d\u5355",
-      L"\u6570\u636e \u6e05\u7a7a \u76ee\u5f55 \u5927\u5c0f",
-      L"\u5173\u4e8e \u7248\u672c \u6e32\u67d3"};
-
-  for (size_t index = 0; index < kSections.size(); ++index) {
-    if (ContainsInsensitive(SectionTitle(kSections[index]), query) || ContainsInsensitive(kKeywords[index], query)) {
-      selected_section_ = kSections[index];
-      return;
-    }
-  }
-}
-
-// ── 跨节搜索：行级索引 / 预览 / 跳转 ─────────────────────────────────
+// ── 跨节搜索：行级索引 / 预览 / 跳转（决策在 SettingsSearchController）──
 
 void SettingsWindow::RebuildSearchHits() {
-  search_hits_.clear();
   search_hit_rects_.clear();
-  search_hover_index_ = -1;
-  search_window_offset_ = 0;
   SetRectEmpty(&search_results_rect_);
 
-  const std::wstring query = common::TrimWide(search_text_);
-  if (query.empty()) {
-    return;
-  }
-
+  // 行来自声明式面板（顺序 = 面板顺序 = Section 枚举序）；决策在控制器。
+  std::vector<std::pair<Section, std::vector<SettingRow>>> section_rows;
+  section_rows.reserve(panels_.size());
   for (size_t index = 0; index < panels_.size(); ++index) {
     ISettingsPanel* panel = panels_[index].get();
     if (panel == nullptr) {
       continue;
     }
-    const std::vector<SettingRow> rows = panel->BuildRows(draft_, this);
-    for (const SettingRow& row : rows) {
-      if (row.title_text == nullptr || row.title_text[0] == L'\0') {
-        continue;
-      }
-      if (!SettingRowMatches(row, query)) {
-        continue;
-      }
-      SearchHit hit;
-      hit.section = static_cast<Section>(index);
-      hit.title = row.title_text;
-      hit.subtitle = row.subtitle_text != nullptr ? row.subtitle_text : L"";
-      hit.hit_kind = row.hit_kind;
-      hit.field_id = row.field_id;
-      hit.select_field = row.select_field;
-      hit.hit_option = row.hit_option;
-      search_hits_.push_back(std::move(hit));
-    }
+    section_rows.push_back({static_cast<Section>(index), panel->BuildRows(draft_, this)});
   }
 
-  if (search_hits_.empty()) {
-    // 没有行级命中时退回章节关键词匹配，「外观」「快捷键」这类节名仍然可用。
-    UpdateSearchSelection();
+  const SettingsSearchController::RebuildOutcome outcome = search_.Rebuild(search_text_, section_rows);
+  if (outcome.has_hits) {
+    PreviewSearchHit(0);
     return;
   }
-  search_hover_index_ = 0;
-  PreviewSearchHit(0);
+  if (outcome.fallback_section.has_value()) {
+    // 没有行级命中时退回章节关键词匹配，「外观」「快捷键」这类节名仍然可用。
+    selected_section_ = *outcome.fallback_section;
+  }
 }
 
 void SettingsWindow::PreviewSearchHit(int index) {
-  if (index < 0 || index >= static_cast<int>(search_hits_.size())) {
+  const SettingsSearchController::Jump jump = search_.Preview(index);
+  if (!jump.valid) {
     return;
   }
-  const SearchHit& hit = search_hits_[static_cast<size_t>(index)];
-  selected_section_ = hit.section;
-  pending_scroll_title_ = hit.title;
-  pending_scroll_section_ = hit.section;
+  selected_section_ = jump.section;
+  pending_scroll_title_ = jump.title;
+  pending_scroll_section_ = jump.section;
 }
 
 void SettingsWindow::ActivateSearchHit(int index) {
-  if (index < 0 || index >= static_cast<int>(search_hits_.size())) {
+  // Activate 消费查询词并清结果（产品语义：防目标节被继续过滤成空）。
+  const SettingsSearchController::Jump jump = search_.Activate(index);
+  if (!jump.valid) {
     return;
   }
-  const SearchHit hit = search_hits_[static_cast<size_t>(index)];
-  // 跳转即消费查询词：清空搜索框，否则目标节会被继续过滤成「只剩一行」甚至空白。
+  // 壳副作用：清空搜索框文本与几何、落跳转、结束编辑、重绘。
   single_line_textbox_.SetText(L"");
   search_text_.clear();
   CloseSearchResults();
-  selected_section_ = hit.section;
-  pending_scroll_title_ = hit.title;
-  pending_scroll_section_ = hit.section;
+  selected_section_ = jump.section;
+  pending_scroll_title_ = jump.title;
+  pending_scroll_section_ = jump.section;
   EndEditing(true);
   InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void SettingsWindow::MoveSearchHover(int delta) {
-  if (search_hits_.empty()) {
+  if (search_.hits().empty()) {
     return;
   }
-  const int total = static_cast<int>(search_hits_.size());
-  int next = search_hover_index_ < 0 ? 0 : search_hover_index_ + delta;
-  if (next < 0) {
-    next = total - 1;
-  }
-  if (next >= total) {
-    next = 0;
-  }
-  search_hover_index_ = next;
-  if (next < search_window_offset_) {
-    search_window_offset_ = next;
-  }
-  if (next >= search_window_offset_ + kMaxVisibleSearchHits) {
-    search_window_offset_ = next - kMaxVisibleSearchHits + 1;
-  }
-  PreviewSearchHit(next);
+  search_.MoveHover(delta);
+  PreviewSearchHit(search_.hover_index());
   InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void SettingsWindow::CloseSearchResults() {
-  search_hits_.clear();
+  search_.Close();
   search_hit_rects_.clear();
-  search_hover_index_ = -1;
-  search_window_offset_ = 0;
   SetRectEmpty(&search_results_rect_);
 }
 
@@ -880,9 +448,8 @@ void SettingsWindow::UpdateSearchResultsLayout() {
   search_hit_rects_.clear();
   SetRectEmpty(&search_results_rect_);
   // 有查询词但无行级命中时仍显示下拉（无匹配提示），不再把主页面过滤成空态。
-  const bool no_results =
-      search_hits_.empty() && !common::TrimWide(search_text_).empty();
-  if (active_field_ != FieldId::Search || (search_hits_.empty() && !no_results)) {
+  const bool no_results = search_.hits().empty() && !search_.query().empty();
+  if (active_field_ != FieldId::Search || (search_.hits().empty() && !no_results)) {
     return;
   }
 
@@ -892,8 +459,8 @@ void SettingsWindow::UpdateSearchResultsLayout() {
   const int header_h = DipToPx(26.0f);
   const int item_h = DipToPx(42.0f);
   const int footer_h = DipToPx(22.0f);
-  const int total = static_cast<int>(search_hits_.size());
-  const int visible = no_results ? 1 : std::min(kMaxVisibleSearchHits, total);
+  const int total = static_cast<int>(search_.hits().size());
+  const int visible = no_results ? 1 : std::min(SettingsSearchController::kMaxVisibleHits, total);
   const int left = search_rect_.left;
   const int width = std::max(DipToPx(220.0f), std::min(DipToPx(360.0f), static_cast<int>(client.right) - outer - left));
   const int top = search_rect_.bottom + DipToPx(6.0f);
@@ -909,13 +476,7 @@ void SettingsWindow::UpdateSearchResultsLayout() {
 }
 
 int SettingsWindow::SearchHitAtPoint(POINT point) const {
-  for (size_t slot = 0; slot < search_hit_rects_.size(); ++slot) {
-    RECT rect = search_hit_rects_[slot];
-    if (PtInRect(&rect, point)) {
-      return search_window_offset_ + static_cast<int>(slot);
-    }
-  }
-  return -1;
+  return search_.HitAtPoint(search_hit_rects_, point);
 }
 
 void SettingsWindow::RenderSearchResults(ID2D1HwndRenderTarget* target) {
@@ -929,7 +490,7 @@ void SettingsWindow::RenderSearchResults(ID2D1HwndRenderTarget* target) {
   AddHitRegion(clipd2d::ui::HitRegion{search_results_rect_, HitKind::None, selected_section_, FieldId::None, 0});
 
   const bool no_results =
-      search_hits_.empty() && !common::TrimWide(search_text_).empty();
+      search_.hits().empty() && !search_.query().empty();
   if (no_results) {
     RECT empty_title = search_results_rect_;
     empty_title.left += DipToPx(12.0f);
@@ -947,7 +508,7 @@ void SettingsWindow::RenderSearchResults(ID2D1HwndRenderTarget* target) {
   }
 
   const std::wstring header_text =
-      L"\u5171 " + std::to_wstring(search_hits_.size()) + L" \u9879\u5339\u914d";
+      L"\u5171 " + std::to_wstring(search_.hits().size()) + L" \u9879\u5339\u914d";
   RECT header_rect = search_results_rect_;
   header_rect.left += DipToPx(12.0f);
   header_rect.right -= DipToPx(12.0f);
@@ -956,12 +517,12 @@ void SettingsWindow::RenderSearchResults(ID2D1HwndRenderTarget* target) {
   DrawTextLine(target, d2d_shell_.small_format(), d2d_shell_.subtle_text_brush(), header_rect, header_text);
 
   for (size_t slot = 0; slot < search_hit_rects_.size(); ++slot) {
-    const int index = search_window_offset_ + static_cast<int>(slot);
-    if (index >= static_cast<int>(search_hits_.size())) {
+    const int index = search_.window_offset() + static_cast<int>(slot);
+    if (index >= static_cast<int>(search_.hits().size())) {
       break;
     }
-    const SearchHit& hit = search_hits_[static_cast<size_t>(index)];
-    const bool active = index == search_hover_index_;
+    const SearchHit& hit = search_.hits()[static_cast<size_t>(index)];
+    const bool active = index == search_.hover_index();
     RECT item = search_hit_rects_[slot];
     if (active) {
       FillRoundedPanel(target, item, 8.0f, d2d_shell_.accent_soft_brush(), nullptr, 0.0f);
@@ -986,7 +547,7 @@ void SettingsWindow::RenderSearchResults(ID2D1HwndRenderTarget* target) {
     AddHitRegion(clipd2d::ui::HitRegion{item, HitKind::SearchResult, hit.section, hit.field_id, index});
   }
 
-  if (static_cast<int>(search_hits_.size()) > kMaxVisibleSearchHits) {
+  if (static_cast<int>(search_.hits().size()) > SettingsSearchController::kMaxVisibleHits) {
     RECT footer_rect = search_results_rect_;
     footer_rect.left += DipToPx(12.0f);
     footer_rect.right -= DipToPx(12.0f);
@@ -2370,8 +1931,8 @@ LRESULT SettingsWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param)
       if (!search_hit_rects_.empty()) {
         // 只在指针落在条目上时改选中项；移开后保留键盘选中的那条。
         const int search_hover = SearchHitAtPoint(point);
-        if (search_hover >= 0 && search_hover != search_hover_index_) {
-          search_hover_index_ = search_hover;
+        if (search_hover >= 0 && search_hover != search_.hover_index()) {
+          search_.SetHoverIndex(search_hover);
           InvalidateRect(hwnd_, &search_results_rect_, FALSE);
         }
       }
@@ -2579,12 +2140,12 @@ LRESULT SettingsWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param)
         D2DWindowlessTextBox* target = (active_field_ == FieldId::Blacklist || active_field_ == FieldId::CustomBlacklist) ? &multi_line_textbox_ : &single_line_textbox_;
         if (message == WM_KEYDOWN) {
           const bool is_search = (active_field_ == FieldId::Search);
-          if (is_search && !search_hits_.empty() && (w_param == VK_DOWN || w_param == VK_UP)) {
+          if (is_search && !search_.hits().empty() && (w_param == VK_DOWN || w_param == VK_UP)) {
             MoveSearchHover(w_param == VK_DOWN ? 1 : -1);
             return 0;
           }
           if (w_param == VK_ESCAPE) {
-             if (is_search && (!search_text_.empty() || !search_hits_.empty())) {
+             if (is_search && (!search_text_.empty() || !search_.hits().empty())) {
                // 第一次 Esc 只清空关键词并收起结果，保留输入焦点。
                single_line_textbox_.SetText(L"");
                search_text_.clear();
@@ -2602,8 +2163,8 @@ LRESULT SettingsWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param)
              return 0;
           }
           if (w_param == VK_RETURN && !target->IsMultiLine()) {
-             if (is_search && !search_hits_.empty()) {
-               ActivateSearchHit(search_hover_index_ >= 0 ? search_hover_index_ : 0);
+             if (is_search && !search_.hits().empty()) {
+               ActivateSearchHit(search_.hover_index() >= 0 ? search_.hover_index() : 0);
                return 0;
              }
              EndEditing(true);

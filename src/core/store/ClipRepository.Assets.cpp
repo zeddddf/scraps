@@ -37,11 +37,15 @@ common::Status ClipRepository::FinalizePendingImageClip(
   if (!transaction.status().ok()) {
     return transaction.status();
   }
+  // INVARIANT: 历史列表的排序键是 updated_at（默认视图 ORDER BY ... updated_at
+  // DESC）。条目位置必须在「到达」那一刻由 InsertClip 唯一确定，任何异步补全
+  // （图片 ingest 落盘、快照提升、失败标记）都不得再写 updated_at，否则内部写回
+  // 复用（ReuseTouchPolicy::KeepPositionOnReuse）为「粘贴后原地不动」所做的努力会
+  // 在几十毫秒后被这里抹掉——表现为「图片粘贴完跳到第一位」。
   Statement statement(
       db_,
       "UPDATE clips SET storage_path = ?1, thumbnail_path = ?2, preview_path = ?3,"
       " image_width = ?4, image_height = ?5, ingest_state = 'ready', ingest_error = '',"
-      " updated_at = ?6,"
       " content_hash = CASE WHEN ?7 <> '' THEN ?7 ELSE content_hash END,"
       " identity_kind = CASE WHEN ?7 <> '' THEN ?8 ELSE identity_kind END,"
       " identity_key = CASE WHEN ?7 <> '' THEN ?7 ELSE identity_key END,"
@@ -52,7 +56,6 @@ common::Status ClipRepository::FinalizePendingImageClip(
   BindWide(statement.get(), 3, preview_path);
   sqlite3_bind_int(statement.get(), 4, image_width);
   sqlite3_bind_int(statement.get(), 5, image_height);
-  sqlite3_bind_int64(statement.get(), 6, NowEpochMs());
   BindText(statement.get(), 7, content_hash);
   BindText(statement.get(), 8, ToSqlIdentityKind(ClipIdentityKind::ImageContentHash));
   sqlite3_bind_int(statement.get(), 9, 4);
@@ -72,12 +75,11 @@ common::Status ClipRepository::FinalizePendingImageClip(
 }
 
 common::Status ClipRepository::MarkImageClipFailed(std::int64_t id, const std::string& error_message) {
+  // 与 FinalizePendingImageClip 同理：失败只是状态变化，不是新到达，不得重排序。
   Statement statement(
-      db_,
-      "UPDATE clips SET ingest_state = 'failed', ingest_error = ?1, updated_at = ?2 WHERE id = ?3");
+      db_, "UPDATE clips SET ingest_state = 'failed', ingest_error = ?1 WHERE id = ?2");
   BindText(statement.get(), 1, error_message);
-  sqlite3_bind_int64(statement.get(), 2, NowEpochMs());
-  sqlite3_bind_int64(statement.get(), 3, id);
+  sqlite3_bind_int64(statement.get(), 2, id);
   if (sqlite3_step(statement.get()) != SQLITE_DONE) {
     return SqliteError(db_, "Mark image clip failed state update failed");
   }
@@ -222,11 +224,12 @@ common::Status ClipRepository::PromoteFileClipToSnapshot(std::int64_t id) {
     return transaction.status();
   }
 
+  // 同一个 INVARIANT：快照提升是异步补全，不得改变条目在历史里的位置。
   Statement update_stmt(
       db_,
       "UPDATE clips SET plain_text = ?1, storage_path = ?2, secondary_path = CASE WHEN secondary_path = '' THEN ?3 ELSE secondary_path END,"
-      " content_hash = ?4, identity_kind = ?5, identity_key = ?6, identity_version = ?7,"
-      " updated_at = ?8 WHERE id = ?9");
+      " content_hash = ?4, identity_kind = ?5, identity_key = ?6, identity_version = ?7"
+      " WHERE id = ?8");
   BindText(update_stmt.get(), 1, target_utf8);
   BindWide(update_stmt.get(), 2, target.wstring());
   BindWide(update_stmt.get(), 3, source_path.wstring());
@@ -234,8 +237,7 @@ common::Status ClipRepository::PromoteFileClipToSnapshot(std::int64_t id) {
   BindText(update_stmt.get(), 5, ToSqlIdentityKind(ClipIdentityKind::ImageFileSnapshot));
   BindText(update_stmt.get(), 6, target_identity_key);
   sqlite3_bind_int(update_stmt.get(), 7, 3);
-  sqlite3_bind_int64(update_stmt.get(), 8, NowEpochMs());
-  sqlite3_bind_int64(update_stmt.get(), 9, id);
+  sqlite3_bind_int64(update_stmt.get(), 8, id);
   if (sqlite3_step(update_stmt.get()) != SQLITE_DONE) {
     return SqliteError(db_, "Promote clip to snapshot failed");
   }

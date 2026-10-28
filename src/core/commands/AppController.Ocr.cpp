@@ -81,6 +81,7 @@ common::Status AppController::CopyOcrTextById(std::int64_t id) {
     return common::Status::Error(common::StatusCode::NotFound, "OCR text is empty.");
   }
   SuppressClipboardMonitor();
+  internal_writeback_baseline_sequence_ = GetClipboardSequenceNumber();
   status = clipboard::SetClipboardText(clip.ocr_text, {}, {});
   if (!status.ok()) {
     return status;
