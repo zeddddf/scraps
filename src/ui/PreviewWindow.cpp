@@ -272,6 +272,8 @@ void PreviewWindow::Destroy() {
   }
   pill_buttons_.clear();
   preview_bitmap_.Reset();
+  decoded_bitmap_cache_.clear();
+  ocr_layout_cache_.clear();
   d2d_shell_.Shutdown();
   if (hwnd_ != nullptr) {
     DestroyWindow(hwnd_);
@@ -668,6 +670,23 @@ void PreviewWindow::LoadPreviewImage() {
   if (!clip_.has_value()) {
     return;
   }
+  // 悬停位图缓存命中 → 免解码直出（来回悬停同一张图零重解码/重建）。
+  // 位图绑定渲染目标：设备重建（target_generation 变化）后过期条目惰性清除。
+  for (auto it = decoded_bitmap_cache_.begin(); it != decoded_bitmap_cache_.end();) {
+    if (it->clip_id != clip_->summary.id) {
+      ++it;
+      continue;
+    }
+    if (it->target_generation != d2d_shell_.target_generation() || it->bitmap == nullptr) {
+      it = decoded_bitmap_cache_.erase(it);
+      continue;
+    }
+    preview_bitmap_ = it->bitmap;
+    preview_width_ = it->width;
+    preview_height_ = it->height;
+    decoded_image_clip_id_ = clip_->summary.id;
+    return;
+  }
   std::wstring path;
   if (clip_->summary.content_type == core::store::ClipContentType::Image) {
     path = detail::ResolvePreviewImagePath(*clip_);
@@ -728,6 +747,23 @@ void PreviewWindow::HandleImageReady(LPARAM l_param) {
     preview_width_ = payload->width;
     preview_height_ = payload->height;
     decoded_image_clip_id_ = clip_->summary.id;  // 同条目重建时复用位图
+    // 解码产物入悬停缓存（LRU 容量 4）：来回悬停免重解码。
+    for (auto it = decoded_bitmap_cache_.begin(); it != decoded_bitmap_cache_.end(); ++it) {
+      if (it->clip_id == clip_->summary.id) {
+        decoded_bitmap_cache_.erase(it);
+        break;
+      }
+    }
+    DecodedBitmapEntry entry;
+    entry.clip_id = clip_->summary.id;
+    entry.target_generation = d2d_shell_.target_generation();
+    entry.width = payload->width;
+    entry.height = payload->height;
+    entry.bitmap = preview_bitmap_;
+    decoded_bitmap_cache_.push_back(std::move(entry));
+    if (decoded_bitmap_cache_.size() > 4) {
+      decoded_bitmap_cache_.erase(decoded_bitmap_cache_.begin());
+    }
   }
   // 自适应：按解码出的实际尺寸重算窗口大小——沿用当前展示档位（悬停
   // compact / 选中全尺寸），否则悬停小窗会在解码完成瞬间跳成选中档大窗
@@ -1511,11 +1547,15 @@ SIZE PreviewWindow::ComputePreferredSize(bool compact) const {
     if (!files_image_ready) {
       const std::wstring ocr = OcrDisplayText();
       if (!ocr.empty()) {
-        float longest = 0.0f;
-        float wrapped = 0.0f;
-        MeasureTextExtent(ocr, d2d_shell_.body_format(),
-                          static_cast<float>(content_max_w), &longest, &wrapped);
-        extra = static_cast<int>(std::min(wrapped, 140.0f)) + 12;
+        // 排版结果走缓存（clip+宽度+dpi 键控），尺寸计算不再每次全量 shaping
+        // （800 字符实测 measure 8-14ms/次，且与 RenderFrame 各测一遍）。
+        const OcrLayoutEntry* entry =
+            EnsureOcrLayout(clip_->summary.id, static_cast<float>(content_max_w));
+        if (entry != nullptr) {
+          extra = static_cast<int>(std::min(entry->text_height, 140.0f)) + 12;
+        } else {
+          extra = 152;  // 排版失败兜底：按显示上限预留
+        }
       }
     }
     int image_width = preview_width_;
@@ -1582,6 +1622,58 @@ SIZE PreviewWindow::ComputePreferredSize(bool compact) const {
   width = std::clamp(width, kPreviewMinWidth, max_w);
   height = std::clamp(height, kPreviewMinHeight, max_h);
   return {width, height};
+}
+
+const PreviewWindow::OcrLayoutEntry* PreviewWindow::EnsureOcrLayout(
+    std::int64_t clip_id, float wrap_width) const {
+  // 命中即提为 MRU；键含 dpi（DPI 变则行高度量变，必须重排）。
+  for (auto it = ocr_layout_cache_.rbegin(); it != ocr_layout_cache_.rend(); ++it) {
+    if (it->clip_id == clip_id && it->dpi == d2d_shell_.dpi() &&
+        std::fabs(it->wrap_width - wrap_width) < 0.5f) {
+      if (std::next(it).base() != std::prev(ocr_layout_cache_.end())) {
+        OcrLayoutEntry hit = std::move(*it);
+        ocr_layout_cache_.erase(std::next(it).base());
+        ocr_layout_cache_.push_back(std::move(hit));
+      }
+      return &ocr_layout_cache_.back();
+    }
+  }
+  // 未命中：shaping 一次并缓存。文本按显示上限截断（与旧绘制路径同源）。
+  std::wstring ocr_text = OcrDisplayText();
+  if (ocr_text.empty()) {
+    return nullptr;
+  }
+  constexpr size_t kOcrDisplayMaxChars = 800;
+  if (ocr_text.size() > kOcrDisplayMaxChars) {
+    ocr_text.resize(kOcrDisplayMaxChars);
+    ocr_text += L" …";
+  }
+  Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+  const HRESULT hr = d2d_shell_.dwrite_factory()->CreateTextLayout(
+      ocr_text.c_str(),
+      static_cast<UINT32>(ocr_text.size()),
+      d2d_shell_.body_format(),
+      wrap_width,
+      10000.0f,
+      layout.GetAddressOf());
+  if (FAILED(hr) || layout == nullptr) {
+    return nullptr;
+  }
+  DWRITE_TEXT_METRICS metrics{};
+  if (FAILED(layout->GetMetrics(&metrics)) || metrics.height <= 0.0f) {
+    return nullptr;
+  }
+  OcrLayoutEntry entry;
+  entry.clip_id = clip_id;
+  entry.dpi = d2d_shell_.dpi();
+  entry.wrap_width = wrap_width;
+  entry.text_height = metrics.height;
+  entry.layout = std::move(layout);
+  ocr_layout_cache_.push_back(std::move(entry));
+  if (ocr_layout_cache_.size() > 8) {
+    ocr_layout_cache_.erase(ocr_layout_cache_.begin());
+  }
+  return &ocr_layout_cache_.back();
 }
 
 void PreviewWindow::RenderFrame() {
@@ -1715,32 +1807,20 @@ void PreviewWindow::RenderFrame() {
   };
 
   if (is_image) {
-    // OCR 文本区（D2D 绘制，替代原 RichEdit 子控件）。
-    // 显示区高 140px（约 6 行）；超长 OCR 文本（实测 5779 字符）全文 shaping
-    // 每帧要 100ms+（measure 59-74ms + draw 32-43ms）。按可见上限截断——
-    // 超出部分本来就被 clip，显示无差异。
-    constexpr size_t kOcrDisplayMaxChars = 800;
-    std::wstring ocr_text = OcrDisplayText();
-    if (ocr_text.size() > kOcrDisplayMaxChars) {
-      ocr_text.resize(kOcrDisplayMaxChars);
-      ocr_text += L" …";
-    }
+    // OCR 文本区（D2D 绘制，替代原 RichEdit 子控件）。显示区高 140px（约 6 行）。
+    // 排版产物缓存在 ocr_layout_cache_（clip+宽度+dpi 键控），绘制走
+    // DrawTextLayout——此前每次 paint 全量 shaping（实测 measure 8-14ms +
+    // draw 5-10ms），窗口一 resize 测量缓存还全量失效重测。
+    const std::wstring ocr_text = OcrDisplayText();
     float ocr_height = 0.0f;
+    const OcrLayoutEntry* ocr_entry = nullptr;
     if (!ocr_text.empty()) {
       const float wrap_width = content_right - kPad;
-      if (ocr_measure_cache_.valid && ocr_measure_cache_.clip_id == clip_->summary.id &&
-          std::fabs(ocr_measure_cache_.wrap_width - wrap_width) < 0.5f) {
-        ocr_height = ocr_measure_cache_.ocr_height;
-      } else {
-        float longest = 0.0f;
-        float wrapped = 0.0f;
-        // 测量宽度与下方 ocr_rect 实际渲染宽度一致（kPad..content_right）。
-        common::Stopwatch ocr_measure_sw;
-        MeasureTextExtent(
-            ocr_text, d2d_shell_.body_format(), wrap_width, &longest, &wrapped);
-        render_probe.ocr_measure_us = ocr_measure_sw.ElapsedUs();
-        ocr_height = std::min(wrapped, 140.0f);
-        ocr_measure_cache_ = {clip_->summary.id, wrap_width, ocr_height, true};
+      // 排版走缓存（clip+宽度+dpi 键控）；绘制用 DrawTextLayout 消费排版
+      // 结果——此前每次 paint 全量 shaping（measure 8-14ms + draw 5-10ms）。
+      ocr_entry = EnsureOcrLayout(clip_->summary.id, wrap_width);
+      if (ocr_entry != nullptr) {
+        ocr_height = std::min(ocr_entry->text_height, 140.0f);
       }
     }
     // 排版网格：标题 14 / meta 42 / tab 36 / 分隔线 68 / 操作行 76..104 / 图片起 114。
@@ -1760,15 +1840,13 @@ void PreviewWindow::RenderFrame() {
           d2d_shell_.muted_text_brush(),
           D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
-    if (ocr_height > 0.0f && !ocr_text.empty()) {
+    if (ocr_entry != nullptr && ocr_height > 0.0f) {
       const D2D1_RECT_F ocr_rect = D2D1::RectF(
           kPad, image_rect.bottom + 10.0f, content_right, image_rect.bottom + 10.0f + ocr_height);
       common::Stopwatch ocr_draw_sw;
-      target->DrawTextW(
-          ocr_text.c_str(),
-          static_cast<UINT32>(ocr_text.size()),
-          d2d_shell_.body_format(),
-          ocr_rect,
+      target->DrawTextLayout(
+          D2D1::Point2F(ocr_rect.left, ocr_rect.top),
+          ocr_entry->layout.Get(),
           d2d_shell_.muted_text_brush(),
           D2D1_DRAW_TEXT_OPTIONS_CLIP);
       render_probe.ocr_draw_us = ocr_draw_sw.ElapsedUs();

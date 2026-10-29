@@ -210,15 +210,7 @@ class PreviewWindow {
     bool valid = false;
   };
   mutable TextMeasureCache text_measure_cache_;
-  // OCR 文本测量缓存（key=clip_id+wrap 宽）：RenderFrame 每帧都要 OCR 区
-  // 高度，5779 字符全文 shaping 实测 59-74ms/帧——缓存后同宽度零成本。
-  struct OcrMeasureCache {
-    std::int64_t clip_id = -1;
-    float wrap_width = 0.0f;
-    float ocr_height = 0.0f;
-    bool valid = false;
-  };
-  mutable OcrMeasureCache ocr_measure_cache_;
+  // （OCR 测量缓存已由 ocr_layout_cache_ 取代：直接缓存排版产物而非高度。）
 
   // Files 清单与滚轮。
   void ReloadFilesModel();
@@ -258,6 +250,33 @@ class PreviewWindow {
   // 已成功解码的位图所属条目 id：同条目重入（OCR 完成后的详情刷新会再次
   // ShowClip→InitForClip）时保留位图，避免“图片→解码中→图片”闪烁与重复解码。
   std::int64_t decoded_image_clip_id_ = -1;
+
+  // —— 悬停内容缓存（排版/解码是内容产物，按条目复用，不随 paint 重做）——
+  // OCR 排版缓存：DWrite 每次绘制调用都全量 shaping（800 字符实测
+  // measure 8-14ms + draw 5-10ms），排版一次产出 IDWriteTextLayout，
+  // 尺寸计算与绘制共用；键 = clip_id + wrap_width + dpi（dpi 变则度量变）。
+  struct OcrLayoutEntry {
+    std::int64_t clip_id = -1;
+    UINT dpi = 0;
+    float wrap_width = 0.0f;
+    float text_height = 0.0f;  // GetMetrics 全文换行总高（使用处再截 140 显示上限）
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+  };
+  // 解码位图缓存：来回悬停同一张图不再重解码/重建位图。位图绑定渲染目标，
+  // 记录 target_generation，设备重建（D2DERR_RECREATE_TARGET）后按代失效。
+  struct DecodedBitmapEntry {
+    std::int64_t clip_id = -1;
+    std::uint64_t target_generation = 0;
+    UINT width = 0;
+    UINT height = 0;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
+  };
+  mutable std::vector<OcrLayoutEntry> ocr_layout_cache_;   // back=MRU，容量 8
+  std::vector<DecodedBitmapEntry> decoded_bitmap_cache_;   // back=MRU，容量 4
+
+  // OCR 文本排版缓存查找/产出（clip_id+wrap_width+dpi 键控，back=MRU）。
+  // 未命中时 shaping 一次并写入缓存；尺寸计算与绘制共用同一份排版结果。
+  const OcrLayoutEntry* EnsureOcrLayout(std::int64_t clip_id, float wrap_width) const;
 
   Microsoft::WRL::ComPtr<ICoreWebView2> webview_;
   Microsoft::WRL::ComPtr<ICoreWebView2Controller> webview_controller_;
