@@ -52,6 +52,8 @@ common::Status ClipRepository::SaveSettings(const AppSettings& settings) {
   if (!status.ok()) return status;
   status = save_one("search_focus_hotkey", common::WideToUtf8(settings.search_focus_hotkey).utf8);
   if (!status.ok()) return status;
+  status = save_one("hover_preview_enabled", settings.hover_preview_enabled ? "1" : "0");
+  if (!status.ok()) return status;
   status = save_one("third_party_sticker_enabled", settings.third_party_sticker_enabled ? "1" : "0");
   if (!status.ok()) return status;
   status = save_one("third_party_sticker_hotkey", common::WideToUtf8(settings.third_party_sticker_hotkey).utf8);

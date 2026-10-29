@@ -1026,6 +1026,9 @@ void SettingsWindow::HandlePrimaryAction(HitKind kind, int option) {
         case 5:
           draft_.focus_search_on_open = !draft_.focus_search_on_open;
           break;
+        case 18:
+          draft_.hover_preview_enabled = !draft_.hover_preview_enabled;
+          break;
         case 6:
           draft_.queue_auto_pop = !draft_.queue_auto_pop;
           break;

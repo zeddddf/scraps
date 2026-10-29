@@ -338,6 +338,8 @@ public:
   static constexpr UINT_PTR kHiddenWarmupTimerId = 4;
   static constexpr UINT_PTR kDragDecayTimerId = 5;
   static constexpr UINT_PTR kScrollBenchTimerId = 7;
+  static constexpr UINT_PTR kHoverPreviewTimerId = 8;
+  static constexpr UINT_PTR kHoverPreviewGraceTimerId = 9;
   static constexpr UINT kHiddenCacheTrimDelayMs = 30000;
   static constexpr UINT kHiddenWorkingSetTrimDelayMs = 200000;
   static constexpr UINT kHiddenWarmupDelayMs = 2000;
@@ -384,6 +386,12 @@ public:
   void UpdateAutoHideHooks();
   void UpdateHoverTooltip(POINT point);
   void HideHoverTooltip();
+  // 悬停预览：行上定格 120ms 弹紧凑预览，离开行/滚动/拖拽取消。
+  void UpdateHoverPreview(int row);
+  void CancelHoverPreview(bool keep_if_pointer_in_preview);
+  void ShowHoverPreviewForRow(int row);
+  void OnHoverPreviewGraceTimer();
+  bool HoverPreviewEnabled() const;
   void StartAutoHideHooks();
   void StopAutoHideHooks();
   void StartDrawerAnimation(bool open);
@@ -680,6 +688,10 @@ public:
   detail::InteractionGuardState interaction_guard_state_{};
   PanelMenuKind active_menu_kind_ = PanelMenuKind::None;
   int last_hovered_list_index_ = -1;
+
+  // 悬停预览状态：row 记录待弹/已弹的行，showing 区分悬停触发与选中触发。
+  int hover_preview_row_ = -1;
+  bool hover_preview_showing_ = false;
 
   int armed_click_item_index_ = -1;
   POINT row_drag_start_point_{};

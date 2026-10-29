@@ -30,3 +30,12 @@
 - 来源：https://github.com/facebook/yoga
 - 许可：MIT License（见 `yoga/LICENSE`）
 - 用途：UI 布局计算（FlexNode）
+
+## webview2
+
+- 目录：`webview2/`
+- 来源：Microsoft Web View2 SDK（NuGet `Microsoft.Web.WebView2` 1.0.2903.40；
+  `include/WebView2.h` + `lib/x64/WebView2LoaderStatic.lib`，许可见 `webview2/LICENSE.txt`）
+- 许可：Microsoft WebView2 SDK 许可（允许随应用再分发静态 Loader）
+- 用途：预览窗 HTML 富文本渲染（懒加载；脚本禁用 + 导航拦截，见
+  `src/ui/PreviewWindow.cpp` 安全边界注释）

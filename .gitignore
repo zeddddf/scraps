@@ -1,16 +1,37 @@
-# Build output
 build/
-out/
-
-# IDE / tooling
 .vs/
-.vscode/
-.idea/
 *.user
 *.suo
 *.VC.db
 CMakeUserPresets.json
-CMakeFiles/
 
-# Logs
-*.log
+# snapshot junk (logs / stray cmake state)
+CMakeFiles/
+build_out.log
+build_*.log
+debug_log.txt
+diff.txt
+
+# 自检/诊断的一次性产物。outputs/ 里保留的是可复用的脚本与结论快照，不是中间文件：
+# 临时数据库副本身份测试要 149MB 一份、vid/ 里是渲染视频的中间件，都不该进仓库。
+outputs/tmp*
+outputs/verify_tmp/
+outputs/vid*
+outputs/order_check*.bmp
+outputs/marketing/
+
+# 已废弃实现与一次性试验：本地留副本供追溯，永不入库、不进公开镜像。
+# 见 docs/plans/architecture-agent-readiness.md 第 0 步。
+*_old.cpp
+*_old.h
+references/attic/
+
+# agent & tooling state
+.workbuddy/
+.codegraph/
+
+# External reference repositories are kept as separate clones.
+external/fluentui-system-icons/
+references/CopyQ/
+references/QuickClipboard/
+# references/Ditto keeps only the build-required QRCode/ICU_Loader subset in-tree.

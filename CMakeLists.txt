@@ -135,6 +135,7 @@ set(SCRAPS_UI_SOURCES
   src/ui/MainWindow.selection.cpp
   src/ui/QuickPasteWindow.cpp
   src/ui/MainWindow.render.cpp
+  src/ui/PreviewContentModel.cpp
   src/ui/PreviewWindow.cpp
   src/ui/TextLayoutCache.cpp
 )
@@ -193,7 +194,13 @@ target_link_libraries(
 
 # ---- ui: 渲染与窗口，依赖 domain ----
 add_library(scraps_ui STATIC ${SCRAPS_UI_SOURCES})
-target_include_directories(scraps_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(
+  scraps_ui
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    # WebView2 SDK（头 + 静态 Loader）：预览窗 HTML 富文本渲染，懒加载不进主路径
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/include
+)
 target_compile_definitions(scraps_ui PRIVATE SCRAPS_ENABLE_TEST_HOOKS)
 target_link_libraries(
   scraps_ui
@@ -208,6 +215,7 @@ target_link_libraries(
     dwmapi
     imm32
     windowscodecs
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/lib/x64/WebView2LoaderStatic.lib
 )
 
 set(SCRAPS_LIB_TARGETS scraps_foundation scraps_yoga scraps_domain scraps_ui)
@@ -329,6 +337,7 @@ add_executable(
   src/tests/AppControllerClipboardPolicyTests.cpp
   src/tests/AppControllerLifecycleTests.cpp
   src/tests/PreviewWindowTests.cpp
+  src/tests/PreviewContentModelTests.cpp
   src/tests/RefreshRequestTests.cpp
   src/tests/RowHeightConsistencyTests.cpp
   src/tests/TextTransformEngineTests.cpp

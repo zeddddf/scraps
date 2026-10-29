@@ -1,5 +1,6 @@
 #include "ui/MainWindowInternal.h"
 #include "core/commands/ISettingsStore.h"
+#include "core/commands/IHistoryFeed.h"
 
 // 输入面：鼠标/键盘事件、静态命中解析、行内动作命中。
 namespace clipd2d::ui {
@@ -125,6 +126,7 @@ void MainWindow::OnMouseMove(POINT point) {
   } move_probe{common::Stopwatch{}, point};
   if (IsOverlayDialogVisible()) {
     hover_point_ = point;
+    CancelHoverPreview(false);
     if (!mouse_tracking_) {
       TRACKMOUSEEVENT track{};
       track.cbSize = sizeof(track);
@@ -154,10 +156,12 @@ void MainWindow::OnMouseMove(POINT point) {
       return;
     }
     hover_point_ = point;
+    CancelHoverPreview(false);
     UpdateRowDrag(point);
     return;
   }
   if (MaybeStartRowDrag(point)) {
+    CancelHoverPreview(false);
     return;
   }
 
@@ -223,6 +227,7 @@ void MainWindow::OnMouseMove(POINT point) {
     RequestVisiblePages(false);
     InvalidateListRegion();
     HideHoverTooltip();
+    CancelHoverPreview(false);
     return;
   }
   if (resolve_hover_token(point) != previous_token) {
@@ -238,11 +243,13 @@ void MainWindow::OnMouseMove(POINT point) {
       last_hovered_list_index_ = current_row;
       InvalidateListRegion();
       UpdateHoverTooltip(point);
+      UpdateHoverPreview(current_row);
       return;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
   }
   UpdateHoverTooltip(point);
+  UpdateHoverPreview(current_row);
 }
 
 void MainWindow::OnLeftButtonDown(POINT point, bool double_click) {
@@ -535,6 +542,111 @@ bool MainWindow::TryPerformRowActionAtPoint(POINT point) {
   }
 
   return false;
+}
+
+// ---- 悬停预览 ----
+
+bool MainWindow::HoverPreviewEnabled() const {
+  return settings_store_ != nullptr && settings_store_->current_settings().hover_preview_enabled;
+}
+
+void MainWindow::UpdateHoverPreview(int row) {
+  if (!HoverPreviewEnabled() || IsOverlayDialogVisible() || row_drag_active_ || drag_scrollbar_) {
+    CancelHoverPreview(false);
+    return;
+  }
+  if (row < 0) {
+    // 离开列表行：光标进入预览窗则保留显示（允许点预览内按钮）。
+    CancelHoverPreview(true);
+    return;
+  }
+  if (hover_preview_showing_ && hover_preview_row_ == row) {
+    return;
+  }
+  if (hover_preview_row_ != row) {
+    hover_preview_row_ = row;
+    SetTimer(hwnd_, kHoverPreviewTimerId, 120, nullptr);
+  }
+}
+
+void MainWindow::CancelHoverPreview(bool keep_if_pointer_in_preview) {
+  ::KillTimer(hwnd_, kHoverPreviewTimerId);
+  hover_preview_row_ = -1;
+  if (!hover_preview_showing_) {
+    return;
+  }
+  if (keep_if_pointer_in_preview && preview_window_.hwnd() != nullptr) {
+    // 不立刻隐藏：预览窗与主面板之间有缝隙，鼠标离开主面板的瞬间
+    // 光标多半还在缝隙里。给 250ms 缓冲，到点再按光标位置决定去留。
+    SetTimer(hwnd_, kHoverPreviewGraceTimerId, 250, nullptr);
+    return;
+  }
+  // 编辑中的预览窗不因悬停路径隐藏（用户正打字，鼠标可能只是飘出窗口）；
+  // 显式隐藏走 HideWindow，那里先提交再隐藏。
+  if (preview_window_.editing()) {
+    return;
+  }
+  ::KillTimer(hwnd_, kHoverPreviewGraceTimerId);
+  preview_window_.Hide();
+  hover_preview_showing_ = false;
+}
+
+void MainWindow::OnHoverPreviewGraceTimer() {
+  if (!hover_preview_showing_) {
+    ::KillTimer(hwnd_, kHoverPreviewGraceTimerId);
+    return;
+  }
+  if (preview_window_.ContainsCursor()) {
+    // 停在预览窗上：继续守（允许长时间停留点 OCR 等按钮）。
+    SetTimer(hwnd_, kHoverPreviewGraceTimerId, 250, nullptr);
+    return;
+  }
+  // 缝隙超时未到达预览窗，或已回到主面板/桌面其它区域：隐藏。
+  // 回到列表行时 mousemove 会在 120ms 后重新弹出。
+  CancelHoverPreview(false);
+}
+
+void MainWindow::ShowHoverPreviewForRow(int row) {
+  hover_preview_row_ = -1;
+  if (!HoverPreviewEnabled() || row < 0) {
+    return;
+  }
+  // 定时器触发时鼠标可能已移走：行必须仍与当前 hover 一致。
+  if (RowIndexAtPoint(hover_point_) != row) {
+    return;
+  }
+  const auto* summary = GetSummaryAt(row);
+  if (summary == nullptr || history_feed_ == nullptr) {
+    return;
+  }
+  if (preview_window_.hwnd() != nullptr && IsWindowVisible(preview_window_.hwnd()) &&
+      preview_window_.ShowingClip(summary->id)) {
+    hover_preview_showing_ = true;
+    return;
+  }
+  RECT row_rect{0, 0, 0, 0};
+  for (auto it = hit_regions_.rbegin(); it != hit_regions_.rend(); ++it) {
+    if (it->kind == HitKind::Item && it->index == row) {
+      row_rect = it->rect;
+      break;
+    }
+  }
+  if (row_rect.bottom <= row_rect.top) {
+    return;
+  }
+  RECT anchor_screen = row_rect;
+  ClientToScreen(hwnd_, reinterpret_cast<POINT*>(&anchor_screen.left));
+  ClientToScreen(hwnd_, reinterpret_cast<POINT*>(&anchor_screen.right));
+  core::store::ClipRecord clip;
+  if (!history_feed_->GetClipById(summary->id, &clip).ok()) {
+    return;
+  }
+  const common::Status created = EnsurePreviewWindowCreated();
+  if (!created.ok()) {
+    return;
+  }
+  preview_window_.ShowClipAt(clip, BuildPreviewHostActions(), anchor_screen, true);
+  hover_preview_showing_ = true;
 }
 
 }  // namespace clipd2d::ui

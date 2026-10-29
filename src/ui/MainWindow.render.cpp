@@ -1,6 +1,7 @@
 #include "ui/MainWindowInternal.h"
 #include "ui/ClipImagePreview.h"
 #include "ui/ClipVisualFileContent.h"
+#include "ui/PreviewContentModel.h"
 #include "ui/RowRenderer.h"
 #include <d2d1effects.h>
 #include "core/commands/ISettingsStore.h"
@@ -1257,7 +1258,8 @@ void MainWindow::RenderFrame() {
             hit_regions_.push_back(HitRegion{toggle_rect, HitKind::DrawerHtmlMode, i});
           }
           text_rect.top += 34;
-          body = show_html_source_ ? ToWide(state_.selected_clip_->html_text) : ToWide(state_.selected_clip_->plain_text);
+          // 存储层保留原始 CF_HTML（回写剪贴板需要头），源码视图展示正文片段。
+          body = show_html_source_ ? ToWide(ExtractHtmlFragment(state_.selected_clip_->html_text)) : ToWide(state_.selected_clip_->plain_text);
         } else {
           body = ToWide(state_.selected_clip_->plain_text);
         }

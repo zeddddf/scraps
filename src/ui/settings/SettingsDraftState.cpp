@@ -29,6 +29,7 @@ void SettingsDraftState::LoadFrom(const core::store::AppSettings& settings) {
   }
   draft_.focus_search_on_open = settings.focus_search_on_open;
   draft_.search_focus_hotkey = settings.search_focus_hotkey;
+  draft_.hover_preview_enabled = settings.hover_preview_enabled;
   if (draft_.search_focus_hotkey.empty()) {
     draft_.search_focus_hotkey = L"Tab";
   }
@@ -81,6 +82,7 @@ core::store::AppSettings SettingsDraftState::BuildSettings(const core::store::Ap
   settings.quick_paste_hotkey = common::TrimWide(draft_.quick_paste_hotkey);
   settings.focus_search_on_open = draft_.focus_search_on_open;
   settings.search_focus_hotkey = common::TrimWide(draft_.search_focus_hotkey);
+  settings.hover_preview_enabled = draft_.hover_preview_enabled;
   settings.third_party_sticker_enabled = draft_.third_party_sticker_enabled;
   settings.third_party_sticker_hotkey = common::TrimWide(draft_.third_party_sticker_hotkey);
   settings.click_paste_mode = draft_.click_paste_mode;
@@ -257,6 +259,7 @@ bool SettingsDraftState::IsSectionDirty(Section section, const core::store::AppS
       return next.monitoring_enabled != cur.monitoring_enabled ||
           next.window_position_mode != cur.window_position_mode ||
           next.focus_search_on_open != cur.focus_search_on_open ||
+          next.hover_preview_enabled != cur.hover_preview_enabled ||
           next.click_paste_mode != cur.click_paste_mode ||
           next.promote_pasted_clip_on_reuse != cur.promote_pasted_clip_on_reuse ||
           next.queue_auto_pop != cur.queue_auto_pop;
@@ -326,6 +329,7 @@ void SettingsDraftState::ResetSectionToDefaults(Section section) {
       draft_.monitoring_enabled = d.monitoring_enabled;
       draft_.window_position_mode = d.window_position_mode;
       draft_.focus_search_on_open = d.focus_search_on_open;
+      draft_.hover_preview_enabled = d.hover_preview_enabled;
       draft_.click_paste_mode = d.click_paste_mode;
       draft_.promote_pasted_clip_on_reuse = d.promote_pasted_clip_on_reuse;
       draft_.queue_auto_pop = d.queue_auto_pop;

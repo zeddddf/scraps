@@ -453,6 +453,8 @@ common::Status ClipRepository::LoadSettings(AppSettings* settings) const {
       settings->focus_search_on_open = value == "1";
     } else if (key == "search_focus_hotkey") {
       settings->search_focus_hotkey = ToWideOrEmpty(value.c_str());
+    } else if (key == "hover_preview_enabled") {
+      settings->hover_preview_enabled = value != "0";
     } else if (key == "third_party_sticker_enabled") {
       settings->third_party_sticker_enabled = value == "1";
     } else if (key == "third_party_sticker_hotkey") {

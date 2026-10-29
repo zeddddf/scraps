@@ -269,6 +269,8 @@ struct AppSettings {
   std::wstring quick_paste_hotkey = L"Alt+~";
   bool focus_search_on_open = false;
   std::wstring search_focus_hotkey = L"Tab";
+  // 悬停预览：列表行上定格弹出紧凑预览窗（PreviewWindow 悬停路径）。
+  bool hover_preview_enabled = true;
   bool third_party_sticker_enabled = false;
   std::wstring third_party_sticker_hotkey;
   ClickPasteMode click_paste_mode = ClickPasteMode::Single;

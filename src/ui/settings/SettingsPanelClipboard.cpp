@@ -64,6 +64,13 @@ void SettingsPanelClipboard::BuildLayout(float width, float height, ISettingsHos
     r6_t_ = std::make_shared<FlexNode>(); r6_txt_->AddChild(r6_t_);
     r6_c_ = std::make_shared<FlexNode>(); r6_->AddChild(r6_c_);
 
+    r8_ = std::make_shared<FlexNode>();
+    card1_->AddChild(r8_);
+    r8_txt_ = std::make_shared<FlexNode>(); r8_txt_->FlexDirection(YGFlexDirectionColumn).JustifyContent(YGJustifyCenter); r8_->AddChild(r8_txt_);
+    r8_t_ = std::make_shared<FlexNode>(); r8_txt_->AddChild(r8_t_);
+    r8_s_ = std::make_shared<FlexNode>(); r8_txt_->AddChild(r8_s_);
+    r8_c_ = std::make_shared<FlexNode>(); r8_->AddChild(r8_c_);
+
     r7_ = std::make_shared<FlexNode>();
     card1_->AddChild(r7_);
     auto r7_txt = std::make_shared<FlexNode>();
@@ -107,6 +114,11 @@ void SettingsPanelClipboard::BuildLayout(float width, float height, ISettingsHos
   r6_t_->Height(static_cast<float>(host->DipToPx(18.0f)));
   r6_c_->Width(static_cast<float>(host->DipToPx(44.0f))).Height(static_cast<float>(host->DipToPx(24.0f)));
 
+  r8_->Height(static_cast<float>(host->DipToPx(60.0f))).Padding(YGEdgeHorizontal, padding).FlexDirection(YGFlexDirectionRow).AlignItems(YGAlignCenter).JustifyContent(YGJustifySpaceBetween);
+  r8_t_->Height(static_cast<float>(host->DipToPx(18.0f))).Margin(YGEdgeBottom, static_cast<float>(host->DipToPx(2.0f)));
+  r8_s_->Height(static_cast<float>(host->DipToPx(14.0f)));
+  r8_c_->Width(static_cast<float>(host->DipToPx(44.0f))).Height(static_cast<float>(host->DipToPx(24.0f)));
+
 
   r7_->Height(static_cast<float>(host->DipToPx(60.0f))).Padding(YGEdgeHorizontal, padding).FlexDirection(YGFlexDirectionRow).AlignItems(YGAlignCenter).JustifyContent(YGJustifySpaceBetween);
   r7_t_->Height(static_cast<float>(host->DipToPx(18.0f))).Margin(YGEdgeBottom, static_cast<float>(host->DipToPx(2.0f)));
@@ -131,6 +143,8 @@ std::vector<SettingRow> SettingsPanelClipboard::BuildRows(const DraftState& draf
                     draft.promote_pasted_clip_on_reuse, Section::Clipboard, 10),
       MakeToggleRow(r6_, r6_t_, nullptr, r6_c_, L"\u81ea\u52a8\u5f39\u51fa\u961f\u5217", L"",
                     draft.queue_auto_pop, Section::Clipboard, 6, false),
+      MakeToggleRow(r8_, r8_t_, r8_s_, r8_c_, L"\u60ac\u505c\u9884\u89c8", L"\u9f20\u6807\u5728\u5217\u8868\u9879\u4e0a\u505c\u7559\u65f6\u5f39\u51fa\u7d27\u51d1\u9884\u89c8\u7a97",
+                    draft.hover_preview_enabled, Section::Clipboard, 18),
       MakeResetRow(r7_, r7_t_, r7_s_, r7_c_, Section::Clipboard),
   };
 }

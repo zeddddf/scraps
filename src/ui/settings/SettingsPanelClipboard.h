@@ -48,6 +48,11 @@ private:
     std::shared_ptr<FlexNode> r6_txt_;
     std::shared_ptr<FlexNode> r6_t_;
     std::shared_ptr<FlexNode> r6_c_;
+    std::shared_ptr<FlexNode> r8_;
+    std::shared_ptr<FlexNode> r8_txt_;
+    std::shared_ptr<FlexNode> r8_t_;
+    std::shared_ptr<FlexNode> r8_s_;
+    std::shared_ptr<FlexNode> r8_c_;
     std::shared_ptr<FlexNode> r7_;
     std::shared_ptr<FlexNode> r7_t_;
     std::shared_ptr<FlexNode> r7_s_;

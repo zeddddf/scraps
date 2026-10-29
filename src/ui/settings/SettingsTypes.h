@@ -115,6 +115,7 @@ struct DraftState {
   std::wstring quick_paste_hotkey;
   bool focus_search_on_open = false;
   std::wstring search_focus_hotkey;
+  bool hover_preview_enabled = true;
   bool third_party_sticker_enabled = false;
   std::wstring third_party_sticker_hotkey;
   core::store::ClickPasteMode click_paste_mode = core::store::ClickPasteMode::Single;

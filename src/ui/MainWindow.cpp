@@ -360,6 +360,11 @@ common::Status MainWindow::EnsurePreviewWindowCreated() {
 
 PreviewWindow::HostActions MainWindow::BuildPreviewHostActions() {
   PreviewWindow::HostActions actions;
+  actions.work_pool = &async_runner_;
+  actions.on_mouse_left = [this]() {
+    // 光标离开预览窗（可能只是穿过缝隙/回主面板）：交给缓冲期判定。
+    CancelHoverPreview(true);
+  };
   actions.on_request_ocr = [this](std::int64_t clip_id, bool force_rerun) {
     if (maintenance_ == nullptr) {
       return common::Status::Error(common::StatusCode::Unavailable, "OCR controller is unavailable.");
@@ -396,6 +401,11 @@ PreviewWindow::HostActions MainWindow::BuildPreviewHostActions() {
   };
   actions.on_hide = [this]() {
     NotifyPreviewWindowHidden();
+  };
+  // 预览窗编辑防抖到期提交：写回剪贴板，捕获管线自然生成新条目
+  // （不抑制捕获、不改库，历史原样保留）。
+  actions.on_commit_text = [this](const std::wstring& text) {
+    CopyTextToClipboard(hwnd_, text);
   };
   actions.enable_image_ocr = true;
   return actions;
@@ -599,6 +609,8 @@ void MainWindow::PresentPreparedWindow(bool focus_search_on_open, bool suppress_
   ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   UpdateWindow(hwnd_);
   PostMessageW(hwnd_, kInstallAutoHideHooksMessage, 0, 0);
+  // 面板重新弹出可能落在预览窗位置上（预览 TOPMOST 会盖住面板）。
+  preview_window_.EnsureNotCoveringOwner();
   if (!startup_metadata_warmup_requested_) {
     startup_metadata_warmup_requested_ = true;
     RequestStartupMetadataAsync();
@@ -665,6 +677,10 @@ void MainWindow::HideWindow() {
   detail::ClearTransientInteractionState(&interaction_guard_state_);
   focus_coordinator_.ResetForHide();
   EndMenu();
+  // 编辑中的预览窗先提交退出（面板隐藏属显式隐藏，编辑内容须先落盘——
+  // 写回剪贴板生成新条目），再走常规取消悬停预览。
+  preview_window_.ExitEditMode(true);
+  CancelHoverPreview(false);
   ShowWindow(hwnd_, SW_HIDE);
   ScheduleDeferredHiddenCacheTrim();
   ScheduleDeferredHiddenWorkingSetTrim();
@@ -1098,6 +1114,9 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
         window_x_ = static_cast<int>(static_cast<short>(LOWORD(l_param)));
         window_y_ = static_cast<int>(static_cast<short>(HIWORD(l_param)));
         has_window_position_ = true;
+        // 预览窗不压面板是持续不变量：面板拖动中每次移动都纠偏
+        // （两个 GetWindowRect + 相交比较，微秒级；不相交时零副作用）。
+        preview_window_.EnsureNotCoveringOwner();
       }
       frame_interval_ms_ = std::max<UINT>(4, static_cast<UINT>(std::lround(1000.0 / DetectRefreshRateHz(hwnd_))));
       return 0;
@@ -1173,6 +1192,15 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
         }
         return 0;
       }
+      if (w_param == kHoverPreviewTimerId) {
+        ::KillTimer(hwnd_, kHoverPreviewTimerId);
+        ShowHoverPreviewForRow(hover_preview_row_);
+        return 0;
+      }
+      if (w_param == kHoverPreviewGraceTimerId) {
+        OnHoverPreviewGraceTimer();
+        return 0;
+      }
       if (w_param == kScrollBenchTimerId) {
         RunScrollBenchmark();
         return 0;
@@ -1231,6 +1259,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
     case WM_MOUSELEAVE:
       mouse_tracking_ = false;
       HideHoverTooltip();
+      CancelHoverPreview(true);
       if (row_drag_active_) {
         return 0;
       }
@@ -1353,6 +1382,7 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
       row_drag_candidate_index_ = -1;
       return 0;
     case WM_MOUSEWHEEL:
+      CancelHoverPreview(false);
       OnMouseWheel(GET_WHEEL_DELTA_WPARAM(w_param));
       return 0;
 
