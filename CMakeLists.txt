@@ -214,6 +214,7 @@ target_link_libraries(
     dwrite
     dwmapi
     imm32
+    winmm
     windowscodecs
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/lib/x64/WebView2LoaderStatic.lib
 )
@@ -232,7 +233,7 @@ add_executable(
   src/app/app.rc
 )
 target_include_directories(Scraps PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
-target_link_libraries(Scraps PRIVATE scraps_ui dbghelp winhttp)
+target_link_libraries(Scraps PRIVATE scraps_ui dbghelp winhttp avrt)
 
 if(MSVC)
   target_link_options(Scraps PRIVATE

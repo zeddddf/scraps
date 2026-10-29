@@ -196,6 +196,9 @@ void MainWindow::DrainPendingOwnedMessages() {
       case kHandleExternalPointerMessage:
         delete reinterpret_cast<ExternalPointerMessagePayload*>(msg.lParam);
         break;
+      case kMutationResultMessage:
+        delete reinterpret_cast<MutationResultPayload*>(msg.lParam);
+        break;
       default:
         // 其余窗口消息不携带堆 payload;窗口即将销毁,直接丢弃。
         break;
@@ -674,6 +677,7 @@ void MainWindow::HideWindow() {
   last_render_tick_qpc_ = 0;
   KillTimer(hwnd_, kAnimationTimerId);
   animation_timer_active_ = false;
+  RestoreTimerResolutionAfterAnimation();  // P1-4
   detail::ClearTransientInteractionState(&interaction_guard_state_);
   focus_coordinator_.ResetForHide();
   EndMenu();
@@ -1602,6 +1606,9 @@ LRESULT MainWindow::WindowProc(UINT message, WPARAM w_param, LPARAM l_param) {
       return 0;
     case kStartupMetadataReadyMessage:
       HandleStartupMetadataReady(w_param, l_param);
+      return 0;
+    case kMutationResultMessage:
+      HandleMutationResult(l_param);
       return 0;
     case kWarmSecondaryD2dMessage:
       if (d2d_shell_.EnsureSecondaryTextFormats().ok()) {

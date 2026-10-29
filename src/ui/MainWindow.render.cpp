@@ -806,6 +806,8 @@ void MainWindow::RenderFrame() {
   // 从而伪造出「Present 一直阻塞 16ms」的假象（实测真实值多在 0.5~2ms）。
   common::Stopwatch rf_stopwatch;
   EnsureBitmapCachesValid();
+  // P2-7 曾在此等待 DXGI waitable 放行,实测组合链 waitable 永不 signal,
+  // 每帧等满 100ms 超时（回退详见 D2dShell.cpp 组合链路径注释）。
   // C1 暗色模式：主题纪元变化时重建刷子并刷新 DWM 暗色属性与文本框颜色。
   if (d2d_shell_.SyncTheme()) {
     ApplyDarkModeAttribute(hwnd_, clipd2d::ui::IsDarkThemeActive());

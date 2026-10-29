@@ -5,6 +5,7 @@
 #include <string>
 
 #include "common/Log.h"
+#include "common/ThreadPriority.h"
 
 namespace clipd2d::common {
 
@@ -50,6 +51,8 @@ void ThreadPool::Shutdown() {
 }
 
 void ThreadPool::WorkerLoop() {
+  // P1-3:池线程全部 BELOW_NORMAL——高负载下让位于 UI 线程与系统前台。
+  common::SetCurrentThreadBackgroundPriority();
   for (;;) {
     std::function<void()> task;
     {

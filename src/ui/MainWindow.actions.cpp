@@ -503,45 +503,57 @@ void MainWindow::FinishRowDrag(POINT, bool cancel) {
     return;
   }
 
+  // P0-1:重排单事务批量提交,worker 执行,完成后回投 UI 线程刷新。旧实现是
+  // UI 线程上 N 次独立加锁 UPDATE 循环(50 项队列 = 50 次串行往返,全部在
+  // drop 消息处理里)。
+  std::vector<core::store::ReorderEntry> entries;
+  entries.reserve(ordered_ids.size());
   for (size_t i = 0; i < ordered_ids.size(); ++i) {
-    const int sort_order = static_cast<int>((i + 1) * 10);
-    switch (scope) {
-      case ReorderScope::Queue:
-        library_mutator_->ReorderQueue(ordered_ids[i], sort_order);
-        break;
-      case ReorderScope::Favorites:
-        library_mutator_->ReorderFavorites(ordered_ids[i], sort_order);
-        break;
-      case ReorderScope::Tag:
-        library_mutator_->ReorderTagItems(state_.current_tag_id(), ordered_ids[i], sort_order);
-        break;
-      case ReorderScope::Pinned:
-        library_mutator_->ReorderPinned(ordered_ids[i], sort_order);
-        break;
-      case ReorderScope::None:
-      default:
-        break;
-    }
+    entries.push_back(core::store::ReorderEntry{ordered_ids[i], static_cast<int>((i + 1) * 10)});
   }
-
-  switch (scope) {
-    case ReorderScope::Queue:
-      RefreshStatus(L"Queue order updated");
-      break;
-    case ReorderScope::Favorites:
-      RefreshStatus(L"Favorite order updated");
-      break;
-    case ReorderScope::Tag:
-      RefreshStatus(L"Tag order updated");
-      break;
-    case ReorderScope::Pinned:
-      RefreshStatus(L"Pinned order updated");
-      break;
-    case ReorderScope::None:
-    default:
-      break;
-  }
-  RefreshData(true);
+  const std::int64_t tag_id = state_.current_tag_id();
+  auto* mutator = library_mutator_;
+  PostLibraryMutation(
+      [mutator, scope, tag_id, entries = std::move(entries)]() -> common::Status {
+        switch (scope) {
+          case ReorderScope::Queue:
+            return mutator->ReorderQueueBatch(entries);
+          case ReorderScope::Favorites:
+            return mutator->ReorderFavoritesBatch(entries);
+          case ReorderScope::Tag:
+            return mutator->ReorderTagItemsBatch(tag_id, entries);
+          case ReorderScope::Pinned:
+            return mutator->ReorderPinnedBatch(entries);
+          case ReorderScope::None:
+          default:
+            return common::Status::Ok();
+        }
+      },
+      [this, scope](const common::Status& status) {
+        if (status.ok()) {
+          switch (scope) {
+            case ReorderScope::Queue:
+              RefreshStatus(L"Queue order updated");
+              break;
+            case ReorderScope::Favorites:
+              RefreshStatus(L"Favorite order updated");
+              break;
+            case ReorderScope::Tag:
+              RefreshStatus(L"Tag order updated");
+              break;
+            case ReorderScope::Pinned:
+              RefreshStatus(L"Pinned order updated");
+              break;
+            case ReorderScope::None:
+            default:
+              break;
+          }
+        } else {
+          RefreshStatus(L"\u8c03\u6574\u987a\u5e8f\u5931\u8d25\uff0c\u5df2\u8fd8\u539f");
+        }
+        // 成功与失败都重查:成功呈现新顺序,失败回到库里的真实顺序。
+        RefreshData(true);
+      });
 }
 
 

@@ -494,11 +494,14 @@ int MainWindow::RowIndexAtPoint(POINT point) const {
 }
 
 void MainWindow::RefreshGroups() {
-  history_data_controller_.RefreshGroups();
+  // P0-2:改走异步元数据通道。以当前刷新代次门控——若有更新的刷新在途,结果
+  // 会被丢弃并由该刷新自身的元数据请求覆盖。绝不动 refresh_generation_ 本身
+  // (Next() 会作废在途的分页/计数结果)。
+  history_data_controller_.RequestMetadataAsync(state_.refresh_generation_.current());
 }
 
 void MainWindow::RefreshTags() {
-  history_data_controller_.RefreshTags();
+  history_data_controller_.RequestMetadataAsync(state_.refresh_generation_.current());
 }
 
 void MainWindow::RefreshData(bool preserve_selection, RefreshDataMode mode) {
@@ -929,6 +932,60 @@ void MainWindow::RequestSelectedClipAsync(std::int64_t clip_id) {
 
 void MainWindow::RequestStartupMetadataAsync() {
   history_data_controller_.RequestStartupMetadataAsync();
+}
+
+void MainWindow::PostLibraryMutation(
+    std::function<common::Status()> mutation,
+    std::function<void(const common::Status&)> on_done) {
+  // P0-1:库操作全部异步化——UI 线程零同步 SQL。mutation 闭包按约定只携带
+  // 值快照（调用点捕获 mutator 裸指针 + 参数），不捕获 this、不触碰窗口状态；
+  // on_done 只在 UI 线程执行。窗口销毁路径上 async_runner_.Shutdown() 排空 +
+  // DrainPendingOwnedMessages 回收，两者都会让 on_done 自然不执行。
+  if (mutation == nullptr) {
+    return;
+  }
+  if (library_mutator_ == nullptr || hwnd_ == nullptr) {
+    if (on_done != nullptr) {
+      on_done(common::Status::Error(common::StatusCode::Unavailable, "library mutator unavailable"));
+    }
+    return;
+  }
+  mutation_queue_.emplace_back(std::move(mutation), std::move(on_done));
+  PumpMutationLane();
+}
+
+void MainWindow::PumpMutationLane() {
+  if (mutation_lane_busy_ || mutation_queue_.empty() || hwnd_ == nullptr) {
+    return;
+  }
+  auto [mutation, on_done] = std::move(mutation_queue_.front());
+  mutation_queue_.pop_front();
+  mutation_lane_busy_ = true;
+  const HWND hwnd = hwnd_;
+  async_runner_.Post([hwnd, mutation = std::move(mutation), on_done = std::move(on_done)]() mutable {
+    auto payload = std::make_unique<MutationResultPayload>();
+    payload->status = mutation();
+    payload->on_done = std::move(on_done);
+    (void)PostOwnedMessage(hwnd, kMutationResultMessage, 0, std::move(payload));
+  });
+}
+
+void MainWindow::HandleMutationResult(LPARAM l_param) {
+  auto payload = TakeOwnedMessagePayload<MutationResultPayload>(l_param);
+  if (payload == nullptr) {
+    // 队列里还有挂起的操作时也要继续泵，避免一次投递失败卡死串行通道。
+    mutation_lane_busy_ = false;
+    PumpMutationLane();
+    return;
+  }
+  const common::Status status = payload->status;
+  auto on_done = std::move(payload->on_done);
+  mutation_lane_busy_ = false;
+  if (on_done != nullptr) {
+    on_done(status);
+  }
+  // 前一个的 on_done（含刷新）跑完再发下一个，保证落库顺序 = 用户操作顺序。
+  PumpMutationLane();
 }
 
 void MainWindow::RequestSourceIconAsync(const core::store::ClipSummary& summary) {

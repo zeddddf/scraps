@@ -1,6 +1,7 @@
 #include "app/Application.h"
 
 #include <algorithm>
+#include <avrt.h>
 #include <commctrl.h>
 #include <cstdio>
 #include <filesystem>
@@ -230,6 +231,12 @@ int Application::Run() {
   // 计时必须用 QPC：GetTickCount64 的 15.625ms 时钟粒度会把 0.4ms 的消息也记成
   // 16ms（跨 tick 边界即进位），曾据此把 725 条「1ms 内」的消息全判为卡顿。
   constexpr std::int64_t kSlowMessageThresholdUs = 16000;
+  // P1-3 高负载设防:UI 线程注册 MMCSS "WindowManager" 任务。系统高负载时
+  // 调度器会给已注册 MMCSS 的 UI 线程保序提权,配合所有 worker 的 BELOW_NORMAL
+  // (common/ThreadPriority.h),别人把 CPU 打满时主面板照常出帧。注册失败不致命
+  // (老系统/精简系统可能无 MMCSS),静默继续。
+  DWORD mmcss_task_index = 0;
+  HANDLE mmcss_task = ::AvSetMmThreadCharacteristicsW(L"WindowManager", &mmcss_task_index);
   MSG message{};
   while (GetMessageW(&message, nullptr, 0, 0) > 0) {
     TranslateMessage(&message);
@@ -248,6 +255,9 @@ int Application::Run() {
     }
   }
 
+  if (mmcss_task != nullptr) {
+    ::AvRevertMmThreadCharacteristics(mmcss_task);
+  }
   return static_cast<int>(message.wParam);
 }
 

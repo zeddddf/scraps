@@ -8,6 +8,7 @@ void MainWindow::StepAnimation() {
   if (hwnd_ == nullptr || !has_pending_work()) {
     KillTimer(hwnd_, kAnimationTimerId);
     animation_timer_active_ = false;
+    RestoreTimerResolutionAfterAnimation();  // P1-4
     return;
   }
   const bool drag_auto_scroll_active = row_drag_active_ && std::fabs(row_drag_auto_scroll_velocity_) > 1.0f;
@@ -232,6 +233,7 @@ void MainWindow::StepAnimation() {
   if (!has_pending_work()) {
     KillTimer(hwnd_, kAnimationTimerId);
     animation_timer_active_ = false;
+    RestoreTimerResolutionAfterAnimation();  // P1-4
   }
 
   

@@ -36,6 +36,9 @@ struct ClipReadyPayload {
 };
 
 struct StartupMetadataReadyPayload {
+  // P0-2:0 = 启动一次性预热语义(原样);非 0 = 刷新驱动的元数据快照,
+  // 按 refresh_generation_ 门控,过期代次的结果直接丢弃。
+  std::uint64_t metadata_generation = 0;
   common::Status groups_status;
   common::Status tags_status;
   common::Status queue_status;

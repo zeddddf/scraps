@@ -80,14 +80,21 @@ common::Status AppController::CopyOcrTextById(std::int64_t id) {
   if (clip.ocr_text.empty()) {
     return common::Status::Error(common::StatusCode::NotFound, "OCR text is empty.");
   }
+  // P2-5:抑制/arm 走 gate 锁,剪贴板写入不持任何锁(与粘贴事务同构)。
   SuppressClipboardMonitor();
-  internal_writeback_baseline_sequence_ = GetClipboardSequenceNumber();
+  {
+    std::scoped_lock gate(clipboard_gate_mutex_);
+    internal_writeback_baseline_sequence_ = GetClipboardSequenceNumber();
+  }
   status = clipboard::SetClipboardText(clip.ocr_text, {}, {});
   if (!status.ok()) {
     return status;
   }
-  pending_arrival_reason_ = store::ClipArrivalReason::InternalClipboardWriteback;
-  pending_arrival_sequence_ = GetClipboardSequenceNumber();
+  {
+    std::scoped_lock gate(clipboard_gate_mutex_);
+    pending_arrival_reason_ = store::ClipArrivalReason::InternalClipboardWriteback;
+    pending_arrival_sequence_ = GetClipboardSequenceNumber();
+  }
   return common::Status::Ok();
 }
 

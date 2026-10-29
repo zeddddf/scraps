@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <string>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include <d2d1.h>
+#include <timeapi.h>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -311,6 +313,13 @@ public:
     detail::InteractionGuardKind deferred_guard = detail::InteractionGuardKind::PopupMenu;
   };
 
+  // P0-1 异步库操作结果：mutation 在 history_pool 执行完毕后回投 UI 线程，
+  // on_done 携带写库结果（成功/失败）在 UI 线程上做刷新或回滚。
+  struct MutationResultPayload {
+    common::Status status;
+    std::function<void(const common::Status&)> on_done;
+  };
+
   static constexpr UINT kShowWindowMessage = contract::kShowWindowMessage;
   static constexpr UINT kRefreshWindowMessage = WM_APP + 101;
   static constexpr UINT kIconReadyMessage = WM_APP + 105;
@@ -329,9 +338,11 @@ public:
   static constexpr UINT kFrameRenderMessage = WM_APP + 120;
   // 异步粘贴失败回抛（paste worker 线程 PostMessage 回主线程）。无 payload。
   static constexpr UINT kPasteFailedMessage = WM_APP + 121;
+  // P0-1 异步库操作结果回投（history_pool 线程 → UI 线程）。
+  static constexpr UINT kMutationResultMessage = WM_APP + 122;
   // Q1:owned-message payload 的消息号区间(销毁前按此区间排空回收)。
   static constexpr UINT kOwnedMessageFirst = kShowWindowMessage;
-  static constexpr UINT kOwnedMessageLast = kFrameRenderMessage;
+  static constexpr UINT kOwnedMessageLast = kMutationResultMessage;
   static constexpr UINT_PTR kAnimationTimerId = 1;
   static constexpr UINT_PTR kHiddenCacheTrimTimerId = 2;
   static constexpr UINT_PTR kHiddenWorkingSetTrimTimerId = 3;
@@ -400,6 +411,10 @@ public:
   // 拖拽衰减、动画与骨架 shimmer、预览/缩略图加载中、延迟页请求挂起、拖拽 blur
   // 衰减。新增脏类型必须同步此清单——漏一项会导致"数据到了但列表不刷新"。
   bool has_pending_work() const;
+  // P1-4:动画帧泵激活期间把系统计时器分辨率提到 1ms(SetTimer 实际派发受系统
+  // 计时器周期限制,默认 15.6ms 会把 3/5/8ms 帧间隔全部劣化),泵停即恢复。
+  void RaiseTimerResolutionForAnimation();
+  void RestoreTimerResolutionAfterAnimation();
   void DrainPendingOwnedMessages();
   void EnsureBitmapCachesValid();
   void SaveWindowPlacementIfNeeded(bool include_position);
@@ -457,6 +472,19 @@ public:
   void RequestStartupMetadataAsync();
   void RequestThumbnailAsync(const core::store::ClipSummary& summary);
   void RequestPreviewAsync(const core::store::ClipRecord& clip);
+
+  // P0-1 异步库操作：mutation 闭包在 history_pool 执行（只允许捕获值快照——
+  // mutator 裸指针 + 参数，不捕获 this、不触碰窗口状态），结果经
+  // kMutationResultMessage 回投，on_done 在 UI 线程执行（刷新/回滚/状态提示）。
+  // 窗口销毁后排空回收会让 on_done 自然不执行，不产生悬挂回调。
+  // 串行通道（PumpMutationLane）：history_pool 是多线程池，两次快速操作若并行
+  // 执行可能乱序落库（如连点两次收藏，最终态与 UI 期望相反）。所有库操作排队
+  // 串行执行，前一个的 on_done 跑完才发下一个。
+  void PostLibraryMutation(
+      std::function<common::Status()> mutation,
+      std::function<void(const common::Status&)> on_done);
+  void HandleMutationResult(LPARAM l_param);
+  void PumpMutationLane();
 
   void HandleCountReady(WPARAM w_param, LPARAM l_param);
   void HandlePageReady(WPARAM w_param, LPARAM l_param);
@@ -617,6 +645,10 @@ public:
   TextLayoutCache text_layout_cache_;
   common::AsyncRunner async_runner_{4};
 
+  // P0-1 库操作串行通道状态（全部只在 UI 线程触碰）。
+  bool mutation_lane_busy_ = false;
+  std::deque<std::pair<std::function<common::Status()>, std::function<void(const common::Status&)>>> mutation_queue_;
+
   std::vector<HitRegion> hit_regions_;
   POINT hover_point_{-1, -1};
   struct StaticPressState {
@@ -634,6 +666,7 @@ public:
   bool panel_locked_ = false;
   bool search_focus_requested_ = false;
   bool animation_timer_active_ = false;
+  bool animation_timer_resolution_raised_ = false;  // P1-4
   std::int64_t last_render_tick_qpc_ = 0;
   float last_rendered_blur_strength_ = 0.0f;
   bool auto_hide_hooks_active_ = false;

@@ -83,6 +83,26 @@ const core::store::ClipSummary* MainWindow::GetBottomTimeSummary(const RECT& lis
   return nullptr;
 }
 
+void MainWindow::RaiseTimerResolutionForAnimation() {
+  // P1-4:SetTimer 的实际派发分辨率受系统计时器周期限制(默认 15.6ms),且
+  // WM_TIMER 是消息队列里优先级最低的消息。帧泵激活期间把系统周期提到 1ms,
+  // 3/5/8ms 的帧间隔才真正生效;泵停即恢复,不长期占用全局计时器分辨率。
+  if (animation_timer_resolution_raised_) {
+    return;
+  }
+  if (::timeBeginPeriod(1) == TIMERR_NOERROR) {
+    animation_timer_resolution_raised_ = true;
+  }
+}
+
+void MainWindow::RestoreTimerResolutionAfterAnimation() {
+  if (!animation_timer_resolution_raised_) {
+    return;
+  }
+  ::timeEndPeriod(1);
+  animation_timer_resolution_raised_ = false;
+}
+
 void MainWindow::EnsureAnimationTimer() {
   // L6:统一经 has_pending_work() 判断是否需要下一帧(硬规则 3),替代原先
   // 各动画启动点各自为战的条件(滚动/拖拽/骨架 shimmer/加载在途)。
@@ -103,6 +123,7 @@ void MainWindow::EnsureAnimationTimer() {
   }
   if (SetTimer(hwnd_, kAnimationTimerId, interval, nullptr)) {
     animation_timer_active_ = true;
+    RaiseTimerResolutionForAnimation();  // P1-4
   }
 }
 

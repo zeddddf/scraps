@@ -16,14 +16,15 @@ common::Status ClipRepository::CountClips(const ClipQuery& query, std::int64_t* 
   std::vector<std::function<void(sqlite3_stmt*, int*)>> binders;
   AppendQuerySql(query, &sql, &binders);
 
-  Statement statement(db_, sql.c_str());
+  ScopedReadConnection read(*this);  // P2-5
+  Statement statement(read.db(), sql.c_str());
   int bind_index = 1;
   for (const auto& binder : binders) {
     binder(statement.get(), &bind_index);
   }
 
   if (sqlite3_step(statement.get()) != SQLITE_ROW) {
-    return SqliteError(db_, "统计条目数量失败");
+    return SqliteError(read.db(), "统计条目数量失败");
   }
   *count = sqlite3_column_int64(statement.get(), 0);
   return common::Status::Ok();
@@ -98,7 +99,8 @@ common::Status ClipRepository::ListClips(
   }
   sql += " LIMIT ? OFFSET ?";
 
-  Statement statement(db_, sql.c_str());
+  ScopedReadConnection read(*this);  // P2-5
+  Statement statement(read.db(), sql.c_str());
   int bind_index = 1;
   for (const auto& binder : binders) {
     binder(statement.get(), &bind_index);
@@ -168,7 +170,7 @@ common::Status ClipRepository::ListClips(
       summary.snippet = common::WideToUtf8(FileSecondaryText(first_path, summary.file_count)).utf8;
     }
     std::vector<TagRecord> tags;
-    common::Status tag_status = LoadClipTags(db_, summary.id, &tags);
+    common::Status tag_status = LoadClipTags(read.db(), summary.id, &tags);
     if (!tag_status.ok()) {
       return tag_status;
     }
@@ -187,8 +189,9 @@ common::Status ClipRepository::GetClipDetailsById(std::int64_t id, ClipRecord* c
     return common::Status::Error(common::StatusCode::InvalidArgument, "输出条目不能为空。");
   }
 
+  ScopedReadConnection read(*this);  // P2-5
   Statement statement(
-      db_,
+      read.db(),
       "SELECT id, title, plain_text, html_text, rtf_text, content_type, storage_tier, storage_path, secondary_path,"
       " thumbnail_path, preview_path, is_pinned, is_favorite, group_id, source_app_name, source_app_path, updated_at, last_pasted_at,"
       " paste_count, image_width, image_height, estimated_decoded_bytes, is_large_image, ingest_state, ingest_error,"
@@ -248,7 +251,7 @@ common::Status ClipRepository::GetClipDetailsById(std::int64_t id, ClipRecord* c
   clip->summary.snippet = clip->plain_text.empty() ? clip->ocr_text.substr(0, 180) : clip->plain_text.substr(0, 180);
 
   std::vector<TagRecord> tags;
-  common::Status status = LoadClipTags(db_, id, &tags);
+  common::Status status = LoadClipTags(read.db(), id, &tags);
   if (!status.ok()) {
     return status;
   }
@@ -269,16 +272,19 @@ common::Status ClipRepository::GetClipDetailsById(std::int64_t id, ClipRecord* c
 }
 
 common::Status ClipRepository::GetClipFormatsById(std::int64_t id, std::vector<ClipFormatPayload>* formats) const {
-  return LoadClipFormats(db_, id, formats);
+  ScopedReadConnection read(*this);  // P2-5
+  return LoadClipFormats(read.db(), id, formats);
 }
 
 common::Status ClipRepository::GetClipById(std::int64_t id, ClipRecord* clip) const {
+  // P2-5:GetClipDetailsById 内部自带 guard,此处不得先取 guard(锁不可重入)。
   common::Status status = GetClipDetailsById(id, clip);
   if (!status.ok()) {
     return status;
   }
 
-  status = LoadClipFormats(db_, id, &clip->formats);
+  ScopedReadConnection read(*this);  // P2-5
+  status = LoadClipFormats(read.db(), id, &clip->formats);
   if (!status.ok()) {
     return status;
   }
@@ -293,24 +299,30 @@ common::Status ClipRepository::GetClipById(std::int64_t id, ClipRecord* clip) co
 }
 
 common::Status ClipRepository::GetLatestClip(ClipRecord* clip) const {
-  Statement statement(db_, "SELECT id FROM clips ORDER BY is_pinned DESC, updated_at DESC LIMIT 1");
-  if (sqlite3_step(statement.get()) != SQLITE_ROW) {
-    return common::Status::Error(common::StatusCode::NotFound, "没有可用条目。");
+  std::int64_t latest_id = 0;
+  {
+    ScopedReadConnection read(*this);  // P2-5:作用域先收,GetClipById 内部再取自己的 guard。
+    Statement statement(read.db(), "SELECT id FROM clips ORDER BY is_pinned DESC, updated_at DESC LIMIT 1");
+    if (sqlite3_step(statement.get()) != SQLITE_ROW) {
+      return common::Status::Error(common::StatusCode::NotFound, "没有可用条目。");
+    }
+    latest_id = sqlite3_column_int64(statement.get(), 0);
   }
-  return GetClipById(sqlite3_column_int64(statement.get(), 0), clip);
+  return GetClipById(latest_id, clip);
 }
 
 common::Status ClipRepository::LoadBootstrapState(BootstrapState* state) const {
   if (state == nullptr) {
     return common::Status::Error(common::StatusCode::InvalidArgument, "输出启动状态对象不能为空。");
   }
+  ScopedReadConnection read(*this);  // P2-5
   Statement statement(
-      db_,
+      read.db(),
       "SELECT "
       " EXISTS(SELECT 1 FROM clips LIMIT 1),"
       " EXISTS(SELECT 1 FROM settings LIMIT 1)");
   if (sqlite3_step(statement.get()) != SQLITE_ROW) {
-    return SqliteError(db_, "读取启动状态失败");
+    return SqliteError(read.db(), "读取启动状态失败");
   }
   state->has_any_clips = sqlite3_column_int(statement.get(), 0) != 0;
   state->has_any_settings = sqlite3_column_int(statement.get(), 1) != 0;
@@ -321,7 +333,8 @@ common::Status ClipRepository::HasAnyClips(bool* has_any_clips) const {
   if (has_any_clips == nullptr) {
     return common::Status::Error(common::StatusCode::InvalidArgument, "输出参数不能为空。");
   }
-  Statement statement(db_, "SELECT 1 FROM clips LIMIT 1");
+  ScopedReadConnection read(*this);  // P2-5
+  Statement statement(read.db(), "SELECT 1 FROM clips LIMIT 1");
   *has_any_clips = sqlite3_step(statement.get()) == SQLITE_ROW;
   return common::Status::Ok();
 }
@@ -330,7 +343,8 @@ common::Status ClipRepository::HasAnySettingsData(bool* has_any_settings) const 
   if (has_any_settings == nullptr) {
     return common::Status::Error(common::StatusCode::InvalidArgument, "输出参数不能为空。");
   }
-  Statement statement(db_, "SELECT 1 FROM settings LIMIT 1");
+  ScopedReadConnection read(*this);  // P2-5
+  Statement statement(read.db(), "SELECT 1 FROM settings LIMIT 1");
   *has_any_settings = sqlite3_step(statement.get()) == SQLITE_ROW;
   return common::Status::Ok();
 }
@@ -342,7 +356,8 @@ common::Status ClipRepository::ListTags(std::vector<TagRecord>* tags) const {
     return common::Status::Error(common::StatusCode::InvalidArgument, "标签输出列表不能为空。");
   }
   tags->clear();
-  Statement statement(db_, "SELECT id, name, color, is_system, sort_order FROM tags ORDER BY is_system ASC, sort_order ASC, name ASC");
+  ScopedReadConnection read(*this);  // P2-5
+  Statement statement(read.db(), "SELECT id, name, color, is_system, sort_order FROM tags ORDER BY is_system ASC, sort_order ASC, name ASC");
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     TagRecord tag;
     tag.id = sqlite3_column_int64(statement.get(), 0);
@@ -356,7 +371,8 @@ common::Status ClipRepository::ListTags(std::vector<TagRecord>* tags) const {
 }
 
 common::Status ClipRepository::ListClipTags(std::int64_t clip_id, std::vector<TagRecord>* tags) const {
-  return LoadClipTags(db_, clip_id, tags);
+  ScopedReadConnection read(*this);  // P2-5
+  return LoadClipTags(read.db(), clip_id, tags);
 }
 
 
@@ -365,8 +381,9 @@ common::Status ClipRepository::ListQueue(std::vector<QueueEntry>* entries) const
     return common::Status::Error(common::StatusCode::InvalidArgument, "队列输出列表不能为空。");
   }
   entries->clear();
+  ScopedReadConnection read(*this);  // P2-5
   Statement statement(
-      db_,
+      read.db(),
       "SELECT id, clip_id, sort_order, auto_pop, created_at FROM paste_queue ORDER BY sort_order ASC, created_at ASC");
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     QueueEntry entry;
@@ -387,8 +404,9 @@ common::Status ClipRepository::ListGroups(std::vector<GroupRecord>* groups) cons
   }
   groups->clear();
 
+  ScopedReadConnection read(*this);  // P2-5
   Statement statement(
-      db_,
+      read.db(),
       "SELECT id, name, sort_order, tab_pinned, tab_sort_order"
       " FROM groups"
       " ORDER BY sort_order ASC, id ASC");

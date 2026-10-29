@@ -12,42 +12,8 @@ namespace clipd2d::ui {
 
 HistoryDataController::HistoryDataController(MainWindow& owner) : owner_(owner) {}
 
-void HistoryDataController::RefreshGroups() {
-  if (owner_.history_feed() == nullptr) {
-    return;
-  }
-  std::vector<core::store::GroupRecord> groups;
-  const common::Status status = owner_.history_feed()->ListGroups(&groups);
-  if (status.ok()) {
-    owner_.history_state().groups_ = std::move(groups);
-  }
-}
-
-void HistoryDataController::RefreshTags() {
-  if (owner_.history_feed() == nullptr) {
-    return;
-  }
-  std::vector<core::store::TagRecord> tags;
-  const common::Status status = owner_.history_feed()->ListTags(&tags);
-  if (status.ok()) {
-    tags.erase(
-        std::remove_if(
-            tags.begin(),
-            tags.end(),
-            [](const core::store::TagRecord& tag) {
-              return tag.is_system;
-            }),
-        tags.end());
-    owner_.history_state().tags_ = std::move(tags);
-  }
-}
-
 void HistoryDataController::RefreshData(const core::commands::RefreshRequest& request, RefreshDataMode mode) {
   owner_.RefreshSettingsCache();
-  if (mode == RefreshDataMode::Full || mode == RefreshDataMode::FastStartup) {
-    RefreshGroups();
-    RefreshTags();
-  }
   owner_.history_state().pending_selected_clip_id_.reset();
   owner_.history_state().pending_refresh_request_ = request;
 
@@ -81,12 +47,11 @@ void HistoryDataController::RefreshData(const core::commands::RefreshRequest& re
       core::commands::ResolveInitialRefreshScrollTarget(request, owner_.scroll_controller()->GetTargetScrollOffset());
 
   if (mode == RefreshDataMode::Full || mode == RefreshDataMode::FastStartup) {
-    std::vector<core::store::QueueEntry> queue_entries;
-    if (owner_.history_feed() != nullptr && owner_.history_feed()->ListQueue(&queue_entries).ok()) {
-      owner_.history_state().queue_count_ = static_cast<int>(queue_entries.size());
-    } else {
-      owner_.history_state().queue_count_ = 0;
-    }
+    // P0-2:groups/tags/queue 元数据三件套改走 history_pool 异步加载,结果经
+    // kStartupMetadataReadyMessage 回投后按刷新代次应用。旧实现在 UI 线程同步
+    // 跑三组 SQL(每次 Full 刷新都来一遍),高负载下与采集写库的 mutex_ 争用
+    // 会直接拖慢 UI 线程。筛选栏晚到几帧,无感。
+    RequestMetadataAsync(generation);
     if (mode == RefreshDataMode::FastStartup) {
       owner_.set_startup_metadata_warmup_completed(true);
       owner_.set_startup_metadata_warmup_requested(true);
@@ -329,10 +294,20 @@ void HistoryDataController::RequestStartupMetadataAsync() {
   if (owner_.history_feed() == nullptr || owner_.hwnd() == nullptr || owner_.startup_metadata_warmup_completed()) {
     return;
   }
+  RequestMetadataAsync(0);
+}
+
+void HistoryDataController::RequestMetadataAsync(std::uint64_t generation) {
+  // P0-2:groups/tags/queue 元数据三件套统一异步通道。generation = 0 走启动
+  // 一次性预热语义;非 0 按刷新代次门控(UI 线程快照后只携带值,不触碰窗口状态)。
+  if (owner_.history_feed() == nullptr || owner_.hwnd() == nullptr) {
+    return;
+  }
   auto* controller = owner_.history_feed();
   const HWND hwnd = owner_.hwnd();
-  owner_.history_pool().Post([controller, hwnd]() {
+  owner_.history_pool().Post([controller, hwnd, generation]() {
     auto payload = std::make_unique<StartupMetadataReadyPayload>();
+    payload->metadata_generation = generation;
     payload->groups_status = controller->ListGroups(&payload->groups);
     payload->tags_status = controller->ListTags(&payload->tags);
     std::vector<core::store::QueueEntry> queue_entries;
@@ -503,7 +478,16 @@ void HistoryDataController::HandleClipReady(LPARAM l_param) {
 
 void HistoryDataController::HandleStartupMetadataReady(LPARAM l_param) {
   auto payload = TakeOwnedMessagePayload<StartupMetadataReadyPayload>(l_param);
-  if (payload == nullptr || owner_.startup_metadata_warmup_completed()) {
+  if (payload == nullptr) {
+    return;
+  }
+  // P0-2:metadata_generation != 0 = 刷新驱动的快照,按刷新代次门控(过期丢弃);
+  // == 0 = 启动一次性预热(warmup 已完成则丢弃,应用后置位)。
+  if (payload->metadata_generation != 0) {
+    if (owner_.history_state().refresh_generation_.IsStale(payload->metadata_generation)) {
+      return;
+    }
+  } else if (owner_.startup_metadata_warmup_completed()) {
     return;
   }
   if (payload->groups_status.ok()) {
@@ -523,7 +507,9 @@ void HistoryDataController::HandleStartupMetadataReady(LPARAM l_param) {
   if (payload->queue_status.ok()) {
     owner_.history_state().queue_count_ = payload->queue_count;
   }
-  owner_.set_startup_metadata_warmup_completed(true);
+  if (payload->metadata_generation == 0) {
+    owner_.set_startup_metadata_warmup_completed(true);
+  }
   owner_.ScheduleListPresent();
 }
 

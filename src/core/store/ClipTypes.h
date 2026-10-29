@@ -213,6 +213,12 @@ struct QueueEntry {
   std::int64_t created_at = 0;
 };
 
+// 批量重排条目：id + 新排序值。拖拽重排一次产出 N 条，走单事务批量 UPDATE。
+struct ReorderEntry {
+  std::int64_t id = 0;
+  int sort_order = 0;
+};
+
 struct BootstrapState {
   bool has_any_clips = false;
   bool has_any_settings = false;

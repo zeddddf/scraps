@@ -2,6 +2,8 @@
 
 #include <chrono>
 
+#include "common/ThreadPriority.h"
+
 namespace clipd2d::core::commands {
 
 AppController::AppController() : settings_repository_(&repository_) {}
@@ -29,38 +31,48 @@ common::Status AppController::Initialize(const common::AppPaths& paths) {
   shutting_down_ = false;
   paste_queue_.Reset();  // 与 shutting_down_ 同步开闸（Initialize 再启动路径）
   clipboard_worker_ = std::thread([this]() {
+    common::SetCurrentThreadBackgroundPriority();  // P1-3
     ClipboardWorkerLoop();
   });
   paste_worker_ = std::thread([this]() {
+    common::SetCurrentThreadBackgroundPriority();  // P1-3
     PasteWorkerLoop();
   });
   ingest_worker_ = std::thread([this]() {
+    common::SetCurrentThreadBackgroundPriority();  // P1-3
     IngestWorkerLoop();
   });
   ocr_worker_ = std::thread([this]() {
+    common::SetCurrentThreadBackgroundPriority();  // P1-3
     OcrWorkerLoop();
   });
   backup_worker_ = std::thread([this]() {
+    common::SetCurrentThreadBackgroundPriority();  // P1-3
     BackupWorkerLoop();
   });
   return common::Status::Ok();
 }
 
 void AppController::Shutdown() {
+  // P2-5:gate 字段(队列/arrival 账本/in-flight 标记)在 clipboard_gate_mutex_ 下
+  // 清理并唤醒 clipboard worker(它在 gate 上等待);mutex_ 只管业务字段。
   {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock gate(clipboard_gate_mutex_);
     shutting_down_ = true;
     pending_clipboard_events_.clear();
     pending_arrival_reason_.reset();
     pending_arrival_sequence_ = 0;
+    clipboard_capture_in_flight_ = false;
+    in_flight_clipboard_sequence_ = 0;
+  }
+  {
+    std::scoped_lock lock(mutex_);
     paste_queue_.Close();   // 对应 shutting_down_：拒新
     paste_queue_.Clear();   // 丢弃未执行请求（与旧 pending_paste_requests_.clear() 同语义）
     pending_image_ingests_.clear();
     active_image_ingests_.clear();
     pending_ocr_jobs_.clear();
     active_ocr_jobs_.clear();
-    clipboard_capture_in_flight_ = false;
-    in_flight_clipboard_sequence_ = 0;
   }
   clipboard_worker_cv_.notify_all();
   paste_worker_cv_.notify_all();
@@ -90,7 +102,10 @@ void AppController::SetRefreshDispatcher(std::function<void(const RefreshRequest
 }
 
 std::optional<AppController::PendingClipboardEvent> AppController::TakeNextPendingClipboardEvent() {
+  // P2-5:队列字段在 clipboard_gate_mutex_ 下;调用方可能同时持有 mutex_
+  // (锁序 mutex_ -> gate),也可能不持有(worker 等待路径)。
   const std::uint64_t now_tick_ms = GetTickCount64();
+  std::scoped_lock gate(clipboard_gate_mutex_);
   for (auto it = pending_clipboard_events_.begin(); it != pending_clipboard_events_.end();) {
     if (it->sequence == 0 || it->sequence <= last_processed_clipboard_sequence_) {
       it = pending_clipboard_events_.erase(it);
@@ -108,23 +123,30 @@ std::optional<AppController::PendingClipboardEvent> AppController::TakeNextPendi
 }
 
 store::ReuseTouchPolicy AppController::ConsumeClipboardTouchPolicy(DWORD sequence, bool internal_writeback) {
+  // P2-5:arrival 账本在 clipboard_gate_mutex_ 下。settings 走快照(调用方可能
+  // 不再持有 mutex_,直接读 settings_ 会是数据竞争)。
+  const store::AppSettings settings_snapshot = current_settings();
   bool should_clear_state = false;
-  const store::ReuseTouchPolicy policy = detail::ResolveClipboardTouchPolicy(
-      pending_arrival_reason_,
-      internal_writeback,
-      settings_.promote_pasted_clip_on_reuse,
-      &should_clear_state);
-  if (should_clear_state) {
-    if (pending_arrival_reason_.has_value() && pending_arrival_sequence_ != 0 && !internal_writeback) {
-      common::WriteLog(
-          common::LogLevel::Info,
-          "clipboard.sequence",
-          "arrival-sequence expired expected=" + std::to_string(pending_arrival_sequence_) +
-              " actual=" + std::to_string(sequence));
+  store::ReuseTouchPolicy policy;
+  {
+    std::scoped_lock gate(clipboard_gate_mutex_);
+    policy = detail::ResolveClipboardTouchPolicy(
+        pending_arrival_reason_,
+        internal_writeback,
+        settings_snapshot.promote_pasted_clip_on_reuse,
+        &should_clear_state);
+    if (should_clear_state) {
+      if (pending_arrival_reason_.has_value() && pending_arrival_sequence_ != 0 && !internal_writeback) {
+        common::WriteLog(
+            common::LogLevel::Info,
+            "clipboard.sequence",
+            "arrival-sequence expired expected=" + std::to_string(pending_arrival_sequence_) +
+                " actual=" + std::to_string(sequence));
+      }
+      pending_arrival_reason_.reset();
+      pending_arrival_sequence_ = 0;
+      internal_writeback_baseline_sequence_ = 0;
     }
-    pending_arrival_reason_.reset();
-    pending_arrival_sequence_ = 0;
-    internal_writeback_baseline_sequence_ = 0;
   }
   if (policy == store::ReuseTouchPolicy::KeepPositionOnReuse) {
     common::WriteLog(
@@ -136,12 +158,19 @@ store::ReuseTouchPolicy AppController::ConsumeClipboardTouchPolicy(DWORD sequenc
 }
 
 bool AppController::IsSuppressedClipboardUpdate() const {
+  std::scoped_lock gate(clipboard_gate_mutex_);
+  return IsSuppressedClipboardUpdateLocked();
+}
+
+bool AppController::IsSuppressedClipboardUpdateLocked() const {
+  // REQUIRES: clipboard_gate_mutex_ 已持有（防 OnClipboardChanged 内重入自锁）。
   const std::int64_t now_ms = NowEpochMs();
   return now_ms < suppress_until_ms_ ||
       now_ms < common::GetGlobalClipboardSuppressUntil();
 }
 
 void AppController::SuppressClipboardMonitor() {
+  std::scoped_lock gate(clipboard_gate_mutex_);
   suppress_until_ms_ = NowEpochMs() + 300;
   common::SetGlobalClipboardSuppressUntil(suppress_until_ms_);
 }
@@ -227,8 +256,12 @@ common::Status AppController::OnClipboardChanged(HWND source_window, DWORD seque
     *clip_id = 0;
   }
 
+  // P2-5:本函数在 UI 线程（WM_CLIPBOARDUPDATE）派发,只碰剪贴板序列账本——
+  // 全部走 clipboard_gate_mutex_,绝不抢业务大锁 mutex_。监控开关读设置快照,
+  // shutting_down_ 是 atomic。图片 ingest 写库/粘贴事务持 mutex_ 再久也不会
+  // 卡住 UI 线程的这次入队。
   {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock gate(clipboard_gate_mutex_);
     const bool matches_pending_internal_writeback =
         sequence != 0 &&
         pending_arrival_reason_.has_value() &&
@@ -236,8 +269,9 @@ common::Status AppController::OnClipboardChanged(HWND source_window, DWORD seque
         internal_writeback_baseline_sequence_ != 0 &&
         sequence > internal_writeback_baseline_sequence_ &&
         sequence <= pending_arrival_sequence_;
-    if (shutting_down_ || !settings_.monitoring_enabled ||
-        (IsSuppressedClipboardUpdate() && !matches_pending_internal_writeback)) {
+    const bool monitoring_enabled = current_settings().monitoring_enabled;
+    if (shutting_down_ || !monitoring_enabled ||
+        (IsSuppressedClipboardUpdateLocked() && !matches_pending_internal_writeback)) {
       return common::Status::Ok();
     }
     if (sequence != 0) {
@@ -277,23 +311,30 @@ void AppController::RunClipboardCaptureLoop() {
     {
       std::unique_lock lock(mutex_);
       const auto next_event = TakeNextPendingClipboardEvent();
+      {
+        // P2-5:in_flight 标记在 clipboard_gate_mutex_ 下(嵌套于 mutex_,锁序固定)。
+        std::scoped_lock gate(clipboard_gate_mutex_);
+        if (!next_event.has_value()) {
+          clipboard_capture_in_flight_ = false;
+          in_flight_clipboard_sequence_ = 0;
+        } else {
+          in_flight_clipboard_sequence_ = next_event->sequence;
+          clipboard_capture_in_flight_ = true;
+        }
+      }
       if (!next_event.has_value()) {
-        clipboard_capture_in_flight_ = false;
-        in_flight_clipboard_sequence_ = 0;
         break;
       }
       current_sequence = next_event->sequence;
       current_source_window = next_event->source_window;
       current_deferred_attempt = next_event->deferred_attempt;
       current_internal_writeback = next_event->internal_writeback;
-      in_flight_clipboard_sequence_ = current_sequence;
-      clipboard_capture_in_flight_ = true;
       settings_snapshot = settings_;
-      common::WriteLog(
-          common::LogLevel::Info,
-          "clipboard.sequence",
-          "dequeue sequence=" + std::to_string(current_sequence) + " remaining=" + std::to_string(pending_clipboard_events_.size()));
     }
+    common::WriteLog(
+        common::LogLevel::Info,
+        "clipboard.sequence",
+        "dequeue sequence=" + std::to_string(current_sequence) + " in_flight=" + std::to_string(current_sequence));
 
     bool local_inserted = false;
     std::int64_t local_clip_id = 0;
@@ -303,7 +344,8 @@ void AppController::RunClipboardCaptureLoop() {
     bool exhausted_unavailable = false;
     bool skip_internal_sticker_capture = false;
     {
-      std::scoped_lock lock(mutex_);
+      // P2-5:arrival 账本改 gate 锁;本块只碰 gate 字段,不再持 mutex_。
+      std::scoped_lock gate(clipboard_gate_mutex_);
       if (detail::ShouldSkipClipboardCapture(
               pending_arrival_reason_,
               current_internal_writeback)) {
@@ -386,13 +428,16 @@ void AppController::RunClipboardCaptureLoop() {
         {
           std::scoped_lock lock(mutex_);
           blocked_by_filter = shutting_down_ || IsBlockedByFilter(clip);
-          // 身份兜底：序列窗口判定会被「派生格式合成」击穿——写回 PNG+DIB+DIBV5 后，
-          // 目标应用（或我们自己）第一次打开剪贴板时 Windows 会惰性合成派生格式，
-          // 每次合成推进一个 sequence。实测图片写回一次推进 7 个，事件到达时
-          // sequence 已越过登记的 final（日志 arrival-sequence expired
-          // expected=23013 actual=23018），于是写回被当成外部复制 → PromoteOnReuse
-          // → MakeJumpToTopRefreshRequest，条目跳到首位。
-          // 内容身份（图片按归一化像素算）跨格式稳定，用它把漏判补回来。
+        }
+        // P2-5:arrival/identity 账本改 gate 锁。身份兜底：序列窗口判定会被「派生
+        // 格式合成」击穿——写回 PNG+DIB+DIBV5 后，目标应用（或我们自己）第一次
+        // 打开剪贴板时 Windows 会惰性合成派生格式，每次合成推进一个 sequence。
+        // 实测图片写回一次推进 7 个，事件到达时 sequence 已越过登记的 final
+        // （日志 arrival-sequence expired expected=23013 actual=23018），于是写回
+        // 被当成外部复制 → PromoteOnReuse → MakeJumpToTopRefreshRequest，条目
+        // 跳到首位。内容身份（图片按归一化像素算）跨格式稳定，用它把漏判补回来。
+        {
+          std::scoped_lock gate(clipboard_gate_mutex_);
           if (!current_internal_writeback &&
               pending_arrival_reason_.has_value() &&
               detail::MatchesInternalWritebackIdentity(
@@ -409,11 +454,14 @@ void AppController::RunClipboardCaptureLoop() {
                     " identity_key=" + clip.identity_key +
                     " age_ms=" + std::to_string(GetTickCount64() - last_internal_writeback_tick_ms_));
           }
-          touch_policy = ConsumeClipboardTouchPolicy(current_sequence, current_internal_writeback);
-          // 回声吸收：内部写回后短时间内同 identity_key 的再捕获（第三方剪贴板
-          // 增强——如 PixPin——接力改写剪贴板所致）不提升位置，视为写回的回声。
-          // 与上面的兜底的区别：这里不要求 pending_arrival_reason_ 仍在（窗口可能
-          // 已被前一个事件消费掉）。
+        }
+        touch_policy = ConsumeClipboardTouchPolicy(current_sequence, current_internal_writeback);
+        {
+          // P2-5:回声吸收——内部写回后短时间内同 identity_key 的再捕获（第三方
+          // 剪贴板增强——如 PixPin——接力改写剪贴板所致）不提升位置，视为写回的
+          // 回声。与上面的兜底的区别：这里不要求 pending_arrival_reason_ 仍在
+          // （窗口可能已被前一个事件消费掉）。
+          std::scoped_lock gate(clipboard_gate_mutex_);
           if (!current_internal_writeback &&
               touch_policy == store::ReuseTouchPolicy::PromoteOnReuse &&
               detail::MatchesInternalWritebackIdentity(
@@ -445,9 +493,17 @@ void AppController::RunClipboardCaptureLoop() {
           if (status.ok() && NeedsPendingImageIngest(clip) && local_clip_id > 0) {
             StartPendingImageIngest(local_clip_id, std::move(clip));
           }
-          if (status.ok()) {
+          if (status.ok() && local_inserted) {
+            // P2-6:保留期清理节流。旧实现每次捕获成功都跑 ClearHistory(在
+            // mutex_ 下删除行+FTS 清理+资产回收,大库上数十 ms,是常态最大的
+            // 持锁窗口,每次复制都来一遍)。改为:仅真插入了新条目且距上次
+            // 清理 ≥60s 才跑;启动维护仍跑一次兜底,条目数最多在两个周期之间
+            // 短暂超限,对用户无感。
+            constexpr std::uint64_t kHistoryTrimIntervalMs = 60000;
             std::scoped_lock lock(mutex_);
-            if (!shutting_down_) {
+            const std::uint64_t now_ms = GetTickCount64();
+            if (!shutting_down_ && now_ms - last_history_trim_tick_ms_ >= kHistoryTrimIntervalMs) {
+              last_history_trim_tick_ms_ = now_ms;
               status = repository_.ClearHistory(settings_snapshot.history_limit, settings_snapshot.history_retention_days);
             }
           }
@@ -466,7 +522,8 @@ void AppController::RunClipboardCaptureLoop() {
     bool deferred_requeued = false;
     DWORD deferred_delay_ms = 0;
     {
-      std::scoped_lock lock(mutex_);
+      // P2-5:全块只碰 gate 字段 + atomic shutting_down_,mutex_ 换 gate 锁。
+      std::scoped_lock gate(clipboard_gate_mutex_);
       if (exhausted_unavailable && current_sequence != 0 && !shutting_down_) {
         if (const auto delay_ms = detail::DeferredClipboardRetryDelayMs(current_deferred_attempt); delay_ms.has_value()) {
           deferred_delay_ms = *delay_ms;
@@ -514,8 +571,10 @@ void AppController::RunClipboardCaptureLoop() {
 }
 
 void AppController::ClipboardWorkerLoop() {
+  // P2-5:等待与出队都在 clipboard_gate_mutex_ 上（cv 换锁）——worker 的休眠
+  // 唤醒不再依赖 mutex_,与 mutex_ 持有者(写库/粘贴)完全解耦。
   for (;;) {
-    std::unique_lock lock(mutex_);
+    std::unique_lock lock(clipboard_gate_mutex_);
     for (;;) {
       if (shutting_down_) {
         break;
@@ -569,7 +628,7 @@ void AppController::BackupWorkerLoop() {
   // Wait 10 seconds after startup before checking startup backup to avoid impacting startup time
   {
     std::unique_lock lock(mutex_);
-    backup_worker_cv_.wait_for(lock, std::chrono::seconds(10), [this]() { return shutting_down_; });
+    backup_worker_cv_.wait_for(lock, std::chrono::seconds(10), [this]() { return shutting_down_.load(); });
     if (shutting_down_) {
       return;
     }
@@ -582,7 +641,7 @@ void AppController::BackupWorkerLoop() {
   int elapsed_hours = 0;
   while (true) {
     std::unique_lock lock(mutex_);
-    backup_worker_cv_.wait_for(lock, std::chrono::hours(1), [this]() { return shutting_down_; });
+    backup_worker_cv_.wait_for(lock, std::chrono::hours(1), [this]() { return shutting_down_.load(); });
     if (shutting_down_) {
       break;
     }

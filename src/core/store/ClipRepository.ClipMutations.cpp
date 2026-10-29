@@ -206,4 +206,40 @@ common::Status ClipRepository::ReorderPinned(std::int64_t clip_id, int new_sort_
   return common::Status::Ok();
 }
 
+common::Status ClipRepository::ReorderFavoritesBatch(const std::vector<ReorderEntry>& entries) {
+  ScopedTransaction transaction(db_);
+  if (!transaction.status().ok()) {
+    return transaction.status();
+  }
+  Statement statement(db_, "UPDATE clips SET favorite_sort_order = ?1 WHERE id = ?2 AND is_favorite = 1");
+  for (const ReorderEntry& entry : entries) {
+    sqlite3_reset(statement.get());
+    sqlite3_clear_bindings(statement.get());
+    sqlite3_bind_int(statement.get(), 1, entry.sort_order);
+    sqlite3_bind_int64(statement.get(), 2, entry.id);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+      return SqliteError(db_, "批量调整收藏顺序失败");
+    }
+  }
+  return transaction.Commit();
+}
+
+common::Status ClipRepository::ReorderPinnedBatch(const std::vector<ReorderEntry>& entries) {
+  ScopedTransaction transaction(db_);
+  if (!transaction.status().ok()) {
+    return transaction.status();
+  }
+  Statement statement(db_, "UPDATE clips SET pin_sort_order = ?1 WHERE id = ?2 AND is_pinned = 1");
+  for (const ReorderEntry& entry : entries) {
+    sqlite3_reset(statement.get());
+    sqlite3_clear_bindings(statement.get());
+    sqlite3_bind_int(statement.get(), 1, entry.sort_order);
+    sqlite3_bind_int64(statement.get(), 2, entry.id);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+      return SqliteError(db_, "批量调整置顶顺序失败");
+    }
+  }
+  return transaction.Commit();
+}
+
 }  // namespace clipd2d::core::store

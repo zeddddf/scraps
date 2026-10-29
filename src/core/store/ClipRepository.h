@@ -1,7 +1,9 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -29,6 +31,28 @@ class ClipRepository {
 
   common::Status Initialize(const common::AppPaths& paths);
   void Shutdown();
+
+  // P2-5:独立只读连接是否可用。可用时 AppController 的读路径不再抢控制器大锁
+  // （WAL 下读不阻塞写）；不可用时调用方应退回大锁旧路径。
+  bool HasReadConnection() const { return read_db_ != nullptr; }
+
+  // P2-5:读操作 RAII 连接选择——有只读连接用只读连接（read_db_mutex_ 串行读），
+  // 没有则退回主连接（此时调用方必须自行持控制器大锁）。同一函数内不可重入
+  // （read_db_mutex_ 非递归），嵌套读调用（如 GetClipById → GetClipDetailsById）
+  // 各自持有自己的 guard，不得在外层先取 guard 再调内层。
+  class ScopedReadConnection {
+   public:
+    explicit ScopedReadConnection(const ClipRepository& repo)
+        : db_(repo.AcquireReadConnection()), repo_(repo) {}
+    ~ScopedReadConnection() { repo_.ReleaseReadConnection(); }
+    ScopedReadConnection(const ScopedReadConnection&) = delete;
+    ScopedReadConnection& operator=(const ScopedReadConnection&) = delete;
+    sqlite3* db() const { return db_; }
+
+   private:
+    const ClipRepository& repo_;
+    sqlite3* db_ = nullptr;
+  };
 
   common::Status InsertClip(
       const CapturedClip& clip,
@@ -83,6 +107,12 @@ class ClipRepository {
   common::Status ReorderFavorites(std::int64_t clip_id, int new_sort_order);
   common::Status ReorderPinned(std::int64_t clip_id, int new_sort_order);
   common::Status ReorderTagItems(std::int64_t tag_id, std::int64_t clip_id, int new_sort_order);
+  // 批量重排：单事务 N 条 UPDATE。拖拽重排从 UI 线程 N 次独立加锁往返改为
+  // 一次批量提交（见 docs/plans/ui-fluidity-roadmap.md P0-1）。
+  common::Status ReorderQueueBatch(const std::vector<ReorderEntry>& entries);
+  common::Status ReorderFavoritesBatch(const std::vector<ReorderEntry>& entries);
+  common::Status ReorderPinnedBatch(const std::vector<ReorderEntry>& entries);
+  common::Status ReorderTagItemsBatch(std::int64_t tag_id, const std::vector<ReorderEntry>& entries);
   common::Status MoveQueueToFront(std::int64_t clip_id, bool auto_pop);
   common::Status MarkPasted(std::int64_t id, bool promote_on_paste);
   common::Status DeleteClip(std::int64_t id);
@@ -108,6 +138,10 @@ class ClipRepository {
 
  private:
   common::Status OpenDatabase(const std::wstring& path);
+  common::Status OpenReadDatabase();
+  void CloseReadDatabase();
+  sqlite3* AcquireReadConnection() const;
+  void ReleaseReadConnection() const;
   common::Status OpenAndCheckDatabase(const std::wstring& path);
   bool VerifyDatabaseIntegrity(const std::wstring& path) const;
   void BackupCorruptDatabase(const std::wstring& database_path);
@@ -131,6 +165,11 @@ class ClipRepository {
 
   common::AppPaths app_paths_;
   sqlite3* db_ = nullptr;
+  // P2-5:独立只读连接——WAL 模式下与写连接并发，读不再排队等写事务。
+  // read_db_mutex_ 串行化同一连接上的并发读；database_path_ 供重开。
+  sqlite3* read_db_ = nullptr;
+  std::wstring database_path_;
+  mutable std::mutex read_db_mutex_;
 };
 
 }  // namespace clipd2d::core::store

@@ -141,4 +141,23 @@ common::Status ClipRepository::ReorderTagItems(std::int64_t tag_id, std::int64_t
   return common::Status::Ok();
 }
 
+common::Status ClipRepository::ReorderTagItemsBatch(std::int64_t tag_id, const std::vector<ReorderEntry>& entries) {
+  ScopedTransaction transaction(db_);
+  if (!transaction.status().ok()) {
+    return transaction.status();
+  }
+  Statement statement(db_, "UPDATE clip_tags SET sort_order = ?1 WHERE tag_id = ?2 AND clip_id = ?3");
+  for (const ReorderEntry& entry : entries) {
+    sqlite3_reset(statement.get());
+    sqlite3_clear_bindings(statement.get());
+    sqlite3_bind_int(statement.get(), 1, entry.sort_order);
+    sqlite3_bind_int64(statement.get(), 2, tag_id);
+    sqlite3_bind_int64(statement.get(), 3, entry.id);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+      return SqliteError(db_, "批量调整标签排序失败");
+    }
+  }
+  return transaction.Commit();
+}
+
 }  // namespace clipd2d::core::store

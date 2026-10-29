@@ -3,8 +3,7 @@
 namespace clipd2d::core::commands {
 
 common::Status AppController::CountClips(const store::ClipQuery& query, std::int64_t* count) {
-  std::scoped_lock lock(mutex_);
-  return repository_.CountClips(query, count);
+  return RunRepositoryRead([&] { return repository_.CountClips(query, count); });
 }
 
 common::Status AppController::ListClips(
@@ -12,38 +11,31 @@ common::Status AppController::ListClips(
     int offset,
     int limit,
     std::vector<store::ClipSummary>* clips) {
-  std::scoped_lock lock(mutex_);
-  return repository_.ListClips(query, offset, limit, clips);
+  return RunRepositoryRead([&] { return repository_.ListClips(query, offset, limit, clips); });
 }
 
 common::Status AppController::GetClipDetailsById(std::int64_t id, store::ClipRecord* clip) {
-  std::scoped_lock lock(mutex_);
-  return repository_.GetClipDetailsById(id, clip);
+  return RunRepositoryRead([&] { return repository_.GetClipDetailsById(id, clip); });
 }
 
 common::Status AppController::GetClipById(std::int64_t id, store::ClipRecord* clip) {
-  std::scoped_lock lock(mutex_);
-  return repository_.GetClipById(id, clip);
+  return RunRepositoryRead([&] { return repository_.GetClipById(id, clip); });
 }
 
 common::Status AppController::GetLatestClip(store::ClipRecord* clip) {
-  std::scoped_lock lock(mutex_);
-  return repository_.GetLatestClip(clip);
+  return RunRepositoryRead([&] { return repository_.GetLatestClip(clip); });
 }
 
 common::Status AppController::LoadBootstrapState(store::BootstrapState* state) {
-  std::scoped_lock lock(mutex_);
-  return repository_.LoadBootstrapState(state);
+  return RunRepositoryRead([&] { return repository_.LoadBootstrapState(state); });
 }
 
 common::Status AppController::HasAnyClips(bool* has_any_clips) {
-  std::scoped_lock lock(mutex_);
-  return repository_.HasAnyClips(has_any_clips);
+  return RunRepositoryRead([&] { return repository_.HasAnyClips(has_any_clips); });
 }
 
 common::Status AppController::HasAnySettingsData(bool* has_any_settings) {
-  std::scoped_lock lock(mutex_);
-  return repository_.HasAnySettingsData(has_any_settings);
+  return RunRepositoryRead([&] { return repository_.HasAnySettingsData(has_any_settings); });
 }
 
 common::Status AppController::TogglePinned(std::int64_t id, bool pinned) {
@@ -95,13 +87,11 @@ common::Status AppController::DeleteTag(std::int64_t tag_id) {
 }
 
 common::Status AppController::ListTags(std::vector<store::TagRecord>* tags) {
-  std::scoped_lock lock(mutex_);
-  return repository_.ListTags(tags);
+  return RunRepositoryRead([&] { return repository_.ListTags(tags); });
 }
 
 common::Status AppController::ListClipTags(std::int64_t id, std::vector<store::TagRecord>* tags) {
-  std::scoped_lock lock(mutex_);
-  return repository_.ListClipTags(id, tags);
+  return RunRepositoryRead([&] { return repository_.ListClipTags(id, tags); });
 }
 
 common::Status AppController::AddToQueue(std::int64_t id) {
@@ -115,13 +105,32 @@ common::Status AppController::RemoveFromQueue(std::int64_t id) {
 }
 
 common::Status AppController::ListQueue(std::vector<store::QueueEntry>* entries) {
-  std::scoped_lock lock(mutex_);
-  return repository_.ListQueue(entries);
+  return RunRepositoryRead([&] { return repository_.ListQueue(entries); });
 }
 
 common::Status AppController::ReorderQueue(std::int64_t id, int new_sort_order) {
   std::scoped_lock lock(mutex_);
   return repository_.ReorderQueue(id, new_sort_order);
+}
+
+common::Status AppController::ReorderQueueBatch(const std::vector<store::ReorderEntry>& entries) {
+  std::scoped_lock lock(mutex_);
+  return repository_.ReorderQueueBatch(entries);
+}
+
+common::Status AppController::ReorderFavoritesBatch(const std::vector<store::ReorderEntry>& entries) {
+  std::scoped_lock lock(mutex_);
+  return repository_.ReorderFavoritesBatch(entries);
+}
+
+common::Status AppController::ReorderPinnedBatch(const std::vector<store::ReorderEntry>& entries) {
+  std::scoped_lock lock(mutex_);
+  return repository_.ReorderPinnedBatch(entries);
+}
+
+common::Status AppController::ReorderTagItemsBatch(std::int64_t tag_id, const std::vector<store::ReorderEntry>& entries) {
+  std::scoped_lock lock(mutex_);
+  return repository_.ReorderTagItemsBatch(tag_id, entries);
 }
 
 common::Status AppController::ReorderFavorites(std::int64_t id, int new_sort_order) {
@@ -234,8 +243,7 @@ common::Status AppController::MoveClipsToHistory(const std::vector<std::int64_t>
 }
 
 common::Status AppController::ListGroups(std::vector<store::GroupRecord>* groups) {
-  std::scoped_lock lock(mutex_);
-  return repository_.ListGroups(groups);
+  return RunRepositoryRead([&] { return repository_.ListGroups(groups); });
 }
 
 common::Status AppController::LoadSettings(store::AppSettings* settings) {

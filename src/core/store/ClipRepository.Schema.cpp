@@ -194,6 +194,7 @@ common::Status ClipRepository::Initialize(const common::AppPaths& paths) {
   if (status.ok()) {
     status = CreateSchema();
     if (status.ok()) {
+      OpenReadDatabase();  // P2-5:只读连接失败不致命(读路径退回大锁),静默继续。
       return common::Status::Ok();
     }
     common::WriteLog(common::LogLevel::Error, "store", "Schema creation failed: " + status.message);
@@ -221,6 +222,7 @@ common::Status ClipRepository::Initialize(const common::AppPaths& paths) {
     if (status.ok()) {
       status = CreateSchema();
       if (status.ok()) {
+        OpenReadDatabase();  // P2-5
         return common::Status::Ok();
       }
       common::WriteLog(common::LogLevel::Error, "store", "Restored database failed schema creation: " + status.message);
@@ -243,7 +245,11 @@ common::Status ClipRepository::Initialize(const common::AppPaths& paths) {
   if (!status.ok()) {
     return status;
   }
-  return CreateSchema();
+  status = CreateSchema();
+  if (status.ok()) {
+    OpenReadDatabase();  // P2-5
+  }
+  return status;
 }
 
 common::Status ClipRepository::OpenAndCheckDatabase(const std::wstring& path) {
@@ -380,14 +386,68 @@ common::Status ClipRepository::RestoreFromLatestBackup(bool* restored, std::wstr
 }
 
 void ClipRepository::Shutdown() {
+  CloseReadDatabase();
   if (db_ != nullptr) {
     sqlite3_close(db_);
     db_ = nullptr;
   }
 }
 
+common::Status ClipRepository::OpenReadDatabase() {
+  // P2-5:独立只读连接。WAL 模式下读写互不阻塞——图片 ingest 写库、保留期清理
+  // 持大锁写库期间,分页/搜索/元数据查询照常走这条连接,UI 异步任务不被拖住。
+  if (database_path_.empty()) {
+    return common::Status::Error(common::StatusCode::InternalError, "Read database path is empty.");
+  }
+  CloseReadDatabase();
+  const std::string converted = common::WideToUtf8(database_path_).utf8;
+  if (sqlite3_open_v2(
+          converted.c_str(),
+          &read_db_,
+          SQLITE_OPEN_READONLY,
+          nullptr) != SQLITE_OK) {
+    if (read_db_ != nullptr) {
+      sqlite3_close(read_db_);
+      read_db_ = nullptr;
+    }
+    return common::Status::Error(common::StatusCode::InternalError, "Open read-only SQLite failed.");
+  }
+  sqlite3_busy_timeout(read_db_, 5000);
+  const char* pragmas =
+      "PRAGMA temp_store=MEMORY;"
+      "PRAGMA query_only=ON;";
+  char* error_message = nullptr;
+  if (sqlite3_exec(read_db_, pragmas, nullptr, nullptr, &error_message) != SQLITE_OK) {
+    const std::string message = error_message != nullptr ? error_message : "unknown";
+    sqlite3_free(error_message);
+    sqlite3_close(read_db_);
+    read_db_ = nullptr;
+    return common::Status::Error(common::StatusCode::InternalError, "Read connection pragmas failed: " + message);
+  }
+  common::WriteLog(common::LogLevel::Info, "store", "Read-only connection opened (P2-5).");
+  return common::Status::Ok();
+}
+
+void ClipRepository::CloseReadDatabase() {
+  if (read_db_ != nullptr) {
+    sqlite3_close(read_db_);
+    read_db_ = nullptr;
+  }
+}
+
+sqlite3* ClipRepository::AcquireReadConnection() const {
+  read_db_mutex_.lock();
+  // 读连接不可用时退回主连接——此时调用方必须自行持控制器大锁（旧路径）。
+  return read_db_ != nullptr ? read_db_ : db_;
+}
+
+void ClipRepository::ReleaseReadConnection() const {
+  read_db_mutex_.unlock();
+}
+
 common::Status ClipRepository::OpenDatabase(const std::wstring& path) {
   const auto converted = common::WideToUtf8(path);
+  database_path_ = path;
   if (sqlite3_open_v2(
           converted.utf8.c_str(),
           &db_,

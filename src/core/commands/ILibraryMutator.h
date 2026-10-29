@@ -40,6 +40,11 @@ class ILibraryMutator {
   virtual common::Status ReorderQueue(std::int64_t id, int new_sort_order) = 0;
   virtual common::Status ReorderFavorites(std::int64_t id, int new_sort_order) = 0;
   virtual common::Status ReorderPinned(std::int64_t id, int new_sort_order) = 0;
+  // 批量重排：拖拽重排一次提交，单事务（store::ReorderEntry 见 ClipTypes.h）。
+  virtual common::Status ReorderQueueBatch(const std::vector<store::ReorderEntry>& entries) = 0;
+  virtual common::Status ReorderFavoritesBatch(const std::vector<store::ReorderEntry>& entries) = 0;
+  virtual common::Status ReorderPinnedBatch(const std::vector<store::ReorderEntry>& entries) = 0;
+  virtual common::Status ReorderTagItemsBatch(std::int64_t tag_id, const std::vector<store::ReorderEntry>& entries) = 0;
 
   // 分组与归属
   virtual common::Status EnsureGroup(const std::wstring& name, std::int64_t* group_id) = 0;

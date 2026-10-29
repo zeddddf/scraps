@@ -480,7 +480,12 @@ common::Status D2dShell::CreateDCompDeviceResources() {
   swapChainDesc.Scaling = DXGI_SCALING_STRETCH; // Required for composition swapchains
   swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
   swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED; // Premultiplied alpha for transparent blending
-  swapChainDesc.Flags = 0;
+  // P2-7 曾在此启用 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT 并在
+  // RenderFrame 前等待。实测（2026-10-29）：DComp FLIP_SEQUENTIAL+PREMULTIPLIED
+  // 组合链上 waitable 永不 signal,每帧等满 100ms 超时,动画帧率 60fps→10fps
+  // （debug.log 1172 条 ui.frame.slow setup_ms≈100）,已回退。vsync 节流保留在
+  // Present(1,0);输入延迟目标仍由下方设备级 SetMaximumFrameLatency(1) 达成
+  // （排队帧数钉在 1,不依赖 waitable）。
 
   // Create swap chain for composition
   hr = dxgi_factory->CreateSwapChainForComposition(
@@ -641,7 +646,8 @@ common::Status D2dShell::CreateDeviceResources1_1() {
   swapChainDesc.Scaling = DXGI_SCALING_NONE;
   swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
   swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-  swapChainDesc.Flags = 0;
+  // P2-7 曾在同处启用 waitable flag,回退原因见组合链路径注释。hwnd 链未单独
+  // 实测,但 waitable 语义相同,统一不走。
 
   hr = dxgi_factory->CreateSwapChainForHwnd(
       d3d_device.Get(),
@@ -1012,6 +1018,15 @@ ID2D1SolidColorBrush* D2dShell::solid_brush(ID2D1RenderTarget* target, const D2D
   return raw;
 }
 
+void D2dShell::WaitForFrameLatency(DWORD timeout_ms) {
+  // P2-7:渲染前等 DXGI 放行(上一帧已 retire/缓冲可用)。超时兜底:设备丢失
+  // 或驱动长时间不给信号时按节流降级继续,绝不把消息线程吊死在等待上。
+  if (frame_latency_waitable_ == nullptr) {
+    return;
+  }
+  (void)::WaitForSingleObjectEx(frame_latency_waitable_, timeout_ms, FALSE);
+}
+
 void D2dShell::ReleaseDeviceResources() {
   solid_brush_cache_.clear();
   white_brush_.Reset();
@@ -1036,6 +1051,10 @@ void D2dShell::ReleaseDeviceResources() {
 
   target_bitmap_.Reset();
   swap_chain_.Reset();
+  if (frame_latency_waitable_ != nullptr) {
+    ::CloseHandle(frame_latency_waitable_);  // P2-7
+    frame_latency_waitable_ = nullptr;
+  }
   device_context_.Reset();
   d2d_device_.Reset();
 

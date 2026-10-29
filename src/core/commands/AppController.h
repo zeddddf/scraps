@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <condition_variable>
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -96,6 +97,10 @@ class AppController : public IHistoryFeed,
   common::Status ReorderFavorites(std::int64_t id, int new_sort_order) override;
   common::Status ReorderPinned(std::int64_t id, int new_sort_order) override;
   common::Status ReorderTagItems(std::int64_t tag_id, std::int64_t id, int new_sort_order) override;
+  common::Status ReorderQueueBatch(const std::vector<store::ReorderEntry>& entries) override;
+  common::Status ReorderFavoritesBatch(const std::vector<store::ReorderEntry>& entries) override;
+  common::Status ReorderPinnedBatch(const std::vector<store::ReorderEntry>& entries) override;
+  common::Status ReorderTagItemsBatch(std::int64_t tag_id, const std::vector<store::ReorderEntry>& entries) override;
   common::Status MoveQueueToFront(std::int64_t id) override;
   common::Status EnsureGroup(const std::wstring& name, std::int64_t* group_id) override;
   common::Status RenameGroup(std::int64_t group_id, const std::wstring& name) override;
@@ -163,6 +168,18 @@ class AppController : public IHistoryFeed,
   void SetRefreshDispatcher(std::function<void(const RefreshRequest&)> dispatcher);
 
  private:
+  // P2-5:读路径统一入口。只读连接可用 → 零大锁（repository 内部 read_db_mutex_
+  // 串行读，WAL 下与写事务并发）；不可用 → 退回大锁旧路径。仅限"纯读且不触碰
+  // controller 状态"的操作；调用方不得已持有 mutex_（fallback 路径会重锁）。
+  template <typename Fn>
+  auto RunRepositoryRead(Fn&& fn) -> decltype(fn()) {
+    if (repository_.HasReadConnection()) {
+      return fn();
+    }
+    std::scoped_lock lock(mutex_);
+    return fn();
+  }
+
   common::Status ExecutePasteTransaction(
       const store::ClipRecord& clip,
       const clipboard::PasteTargetContext* target_context,
@@ -171,6 +188,7 @@ class AppController : public IHistoryFeed,
       std::string_view override_text,
       bool use_override_text);
   bool IsSuppressedClipboardUpdate() const;
+  bool IsSuppressedClipboardUpdateLocked() const;
   void SuppressClipboardMonitor();
   bool IsBlockedByFilter(const store::CapturedClip& clip) const;
   void RunClipboardCaptureLoop();
@@ -188,6 +206,17 @@ class AppController : public IHistoryFeed,
   void PublishSettingsCacheLocked();
 
   mutable std::mutex mutex_;
+  // P2-5:剪贴板序列账本专用小锁。WM_CLIPBOARDUPDATE 在 UI 线程派发,
+  // OnClipboardChanged 只碰下面这组字段——它们脱离 mutex_ 后,UI 线程的事件
+  // 入队永远不排队等业务大锁(图片 ingest 写库/粘贴事务期间的 mutex_ 争用
+  // 不再打断 UI)。锁序固定 mutex_ -> clipboard_gate_mutex_(worker 侧嵌套),
+  // 任何路径不得反向。守卫字段:
+  //   pending_clipboard_events_ / last_processed_clipboard_sequence_ /
+  //   in_flight_clipboard_sequence_ / clipboard_capture_in_flight_ /
+  //   suppress_until_ms_ / pending_arrival_reason_ / pending_arrival_sequence_ /
+  //   internal_writeback_baseline_sequence_ /
+  //   last_internal_writeback_identity_key_ / last_internal_writeback_tick_ms_
+  mutable std::mutex clipboard_gate_mutex_;
   // 设置快照专用锁：settings_cache_ 是 settings_ 的只读副本，只由 SaveSettings /
   // Initialize 在持 mutex_ 时同步刷新。current_settings() 走这把锁而不再抢 mutex_，
   // 否则 UI 线程每帧两次取设置都会和粘贴 worker 的 SQLite 写入撞在一起
@@ -206,14 +235,16 @@ class AppController : public IHistoryFeed,
   store::AppSettings settings_cache_;
   actions::ActionResolver action_resolver_;
   paste::TextTransformEngine text_transform_engine_;
-  std::int64_t suppress_until_ms_ = 0;
+  std::int64_t suppress_until_ms_ = 0;  // P2-5:clipboard_gate_mutex_
   std::function<void(const RefreshRequest&)> refresh_dispatcher_;
   std::unordered_set<std::int64_t> active_image_ingests_;
-  DWORD last_processed_clipboard_sequence_ = 0;
-  DWORD in_flight_clipboard_sequence_ = 0;
-  std::deque<PendingClipboardEvent> pending_clipboard_events_;
-  bool clipboard_capture_in_flight_ = false;
-  bool shutting_down_ = false;
+  DWORD last_processed_clipboard_sequence_ = 0;  // P2-5:clipboard_gate_mutex_
+  DWORD in_flight_clipboard_sequence_ = 0;  // P2-5:clipboard_gate_mutex_
+  std::deque<PendingClipboardEvent> pending_clipboard_events_;  // P2-5:clipboard_gate_mutex_
+  bool clipboard_capture_in_flight_ = false;  // P2-5:clipboard_gate_mutex_
+  std::atomic<bool> shutting_down_{false};
+  // P2-6:上次保留期清理时刻(mutex_ 下,仅采集 worker 触碰)。节流 ClearHistory。
+  std::uint64_t last_history_trim_tick_ms_ = 0;
   std::thread clipboard_worker_;
   std::thread paste_worker_;
   std::thread ingest_worker_;
@@ -232,14 +263,14 @@ class AppController : public IHistoryFeed,
   };
   std::deque<PendingOcrJob> pending_ocr_jobs_;
   std::unordered_set<std::int64_t> active_ocr_jobs_;
-  std::optional<store::ClipArrivalReason> pending_arrival_reason_;
-  DWORD pending_arrival_sequence_ = 0;
+  std::optional<store::ClipArrivalReason> pending_arrival_reason_;  // P2-5:clipboard_gate_mutex_
+  DWORD pending_arrival_sequence_ = 0;  // P2-5:clipboard_gate_mutex_
   // 内部写回区间判定（见 PendingClipboardEvent::internal_writeback 注释）。
-  DWORD internal_writeback_baseline_sequence_ = 0;
+  DWORD internal_writeback_baseline_sequence_ = 0;  // P2-5:clipboard_gate_mutex_
   // 回声吸收：内部写回后短时间内同 identity_key 的再捕获（第三方剪贴板增强
   // 接力改写剪贴板）按 KeepPositionOnReuse 处理，不提升位置。
-  std::string last_internal_writeback_identity_key_;
-  std::uint64_t last_internal_writeback_tick_ms_ = 0;
+  std::string last_internal_writeback_identity_key_;  // P2-5:clipboard_gate_mutex_
+  std::uint64_t last_internal_writeback_tick_ms_ = 0;  // P2-5:clipboard_gate_mutex_
   static constexpr std::uint64_t kInternalWritebackEchoWindowMs = 5000;
 };
 

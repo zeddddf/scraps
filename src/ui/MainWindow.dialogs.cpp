@@ -71,15 +71,27 @@ void MainWindow::OpenCreateGroupDialog() {
         if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        std::int64_t group_id = 0;
-        const common::Status status = library_mutator_->EnsureGroup(result.text, &group_id);
-        if (!status.ok() || group_id <= 0) {
-          RefreshStatus(L"\u65b0\u5efa\u8d44\u6599\u5939\u5931\u8d25");
-          return;
-        }
-        RefreshGroups();
-        RefreshStatus(L"\u5df2\u65b0\u5efa\u8d44\u6599\u5939");
-        SelectGroupById(group_id);
+        // P0-1:写库异步（EnsureGroup 的输出 id 经 shared_ptr 带回 UI 线程）。
+        auto* group_mutator = library_mutator_;
+        const std::wstring group_name = result.text;
+        auto group_id = std::make_shared<std::int64_t>(0);
+        PostLibraryMutation(
+            [group_mutator, group_name, group_id]() -> common::Status {
+              const common::Status status = group_mutator->EnsureGroup(group_name, &*group_id);
+              if (status.ok() && *group_id <= 0) {
+                return common::Status::Error(common::StatusCode::InternalError, "ensure group returned no id");
+              }
+              return status;
+            },
+            [this, group_id](const common::Status& status) {
+              if (!status.ok() || *group_id <= 0) {
+                RefreshStatus(L"\u65b0\u5efa\u8d44\u6599\u5939\u5931\u8d25");
+                return;
+              }
+              RefreshGroups();
+              RefreshStatus(L"\u5df2\u65b0\u5efa\u8d44\u6599\u5939");
+              SelectGroupById(*group_id);
+            });
       });
   dialog_panel_window_.Show(config, std::move(actions));
 }
@@ -110,17 +122,22 @@ void MainWindow::OpenRenameGroupDialog(std::int64_t group_id) {
         if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = library_mutator_->RenameGroup(group_id, result.text);
-        if (!status.ok()) {
-          RefreshStatus(L"\u91cd\u547d\u540d\u8d44\u6599\u5939\u5931\u8d25");
-          return;
-        }
-        if (state_.current_group_id() == group_id) {
-          state_.browser_state_.group_name = result.text;
-        }
-        RefreshGroups();
-        RefreshStatus(L"\u5df2\u91cd\u547d\u540d\u8d44\u6599\u5939");
-        RefreshData(true);
+        auto* group_mutator = library_mutator_;
+        const std::wstring group_name = result.text;
+        PostLibraryMutation(
+            [group_mutator, group_id, group_name] { return group_mutator->RenameGroup(group_id, group_name); },
+            [this, group_id, group_name](const common::Status& status) {
+              if (!status.ok()) {
+                RefreshStatus(L"\u91cd\u547d\u540d\u8d44\u6599\u5939\u5931\u8d25");
+                return;
+              }
+              if (state_.current_group_id() == group_id) {
+                state_.browser_state_.group_name = group_name;
+              }
+              RefreshGroups();
+              RefreshStatus(L"\u5df2\u91cd\u547d\u540d\u8d44\u6599\u5939");
+              RefreshData(true);
+            });
       });
   dialog_panel_window_.Show(config, std::move(actions));
 }
@@ -149,28 +166,50 @@ void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_aft
         if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        std::int64_t tag_id = 0;
-        common::Status status = library_mutator_->EnsureTag(result.text, result.color, &tag_id);
-        if (!status.ok() || tag_id <= 0) {
-          RefreshStatus(L"\u65b0\u5efa\u6807\u7b7e\u5931\u8d25");
-          return;
-        }
-        if (clip_id > 0) {
-          status = library_mutator_->AddTag(clip_id, tag_id);
-          if (!status.ok()) {
-            RefreshStatus(L"\u6dfb\u52a0\u6807\u7b7e\u5931\u8d25");
-            return;
+        // P0-1:EnsureTag → (可选)AddTag 链式异步；tag_id 经 shared_ptr 带回。
+        auto* tag_mutator = library_mutator_;
+        const std::wstring tag_name = result.text;
+        const std::wstring tag_color = result.color;
+        auto tag_id = std::make_shared<std::int64_t>(0);
+        const auto finish = [this, clip_id, apply_filter_after_create, tag_id]() {
+          RefreshTags();
+          if (apply_filter_after_create || clip_id == 0) {
+            core::browser::BrowserCommand select_tag;
+            select_tag.kind = core::browser::BrowserCommandKind::SelectTag;
+            select_tag.tag_id = *tag_id;
+            ApplyBrowserCommand(select_tag);
           }
-        }
-        RefreshTags();
-        if (apply_filter_after_create || clip_id == 0) {
-          core::browser::BrowserCommand select_tag;
-          select_tag.kind = core::browser::BrowserCommandKind::SelectTag;
-          select_tag.tag_id = tag_id;
-          ApplyBrowserCommand(select_tag);
-        }
-        RefreshStatus(L"Created tag");
-        RefreshData(true);
+          RefreshStatus(L"Created tag");
+          RefreshData(true);
+        };
+        PostLibraryMutation(
+            [tag_mutator, tag_name, tag_color, tag_id]() -> common::Status {
+              const common::Status status = tag_mutator->EnsureTag(tag_name, tag_color, &*tag_id);
+              if (status.ok() && *tag_id <= 0) {
+                return common::Status::Error(common::StatusCode::InternalError, "ensure tag returned no id");
+              }
+              return status;
+            },
+            [this, clip_id, tag_mutator, tag_id, finish](const common::Status& status) {
+              if (!status.ok() || *tag_id <= 0) {
+                RefreshStatus(L"\u65b0\u5efa\u6807\u7b7e\u5931\u8d25");
+                return;
+              }
+              if (clip_id > 0) {
+                const std::int64_t created_tag_id = *tag_id;
+                PostLibraryMutation(
+                    [tag_mutator, clip_id, created_tag_id] { return tag_mutator->AddTag(clip_id, created_tag_id); },
+                    [this, finish](const common::Status& add_status) {
+                      if (!add_status.ok()) {
+                        RefreshStatus(L"\u6dfb\u52a0\u6807\u7b7e\u5931\u8d25");
+                        return;
+                      }
+                      finish();
+                    });
+                return;
+              }
+              finish();
+            });
       });
   dialog_panel_window_.Show(config, std::move(actions));
 }
@@ -206,18 +245,24 @@ void MainWindow::OpenRenameTagDialog(std::int64_t tag_id) {
         if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = library_mutator_->RenameTag(tag_id, result.text, result.color);
-        if (!status.ok()) {
-          RefreshStatus(L"Rename tag failed");
-          return;
-        }
-        core::browser::BrowserCommand select_tag;
-        select_tag.kind = core::browser::BrowserCommandKind::SelectTag;
-        select_tag.tag_id = tag_id;
-        ApplyBrowserCommand(select_tag);
-        RefreshTags();
-        RefreshStatus(L"Renamed tag");
-        RefreshData(true);
+        auto* tag_mutator = library_mutator_;
+        const std::wstring tag_name = result.text;
+        const std::wstring tag_color = result.color;
+        PostLibraryMutation(
+            [tag_mutator, tag_id, tag_name, tag_color] { return tag_mutator->RenameTag(tag_id, tag_name, tag_color); },
+            [this, tag_id](const common::Status& status) {
+              if (!status.ok()) {
+                RefreshStatus(L"Rename tag failed");
+                return;
+              }
+              core::browser::BrowserCommand select_tag;
+              select_tag.kind = core::browser::BrowserCommandKind::SelectTag;
+              select_tag.tag_id = tag_id;
+              ApplyBrowserCommand(select_tag);
+              RefreshTags();
+              RefreshStatus(L"Renamed tag");
+              RefreshData(true);
+            });
       });
   dialog_panel_window_.Show(config, std::move(actions));
 }
@@ -244,17 +289,21 @@ void MainWindow::OpenDeleteGroupDialog(std::int64_t group_id) {
         if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = library_mutator_->DeleteGroup(group_id);
-        if (!status.ok()) {
-          RefreshStatus(L"\u5220\u9664\u8d44\u6599\u5939\u5931\u8d25");
-          return;
-        }
-        if (state_.current_group_id() == group_id) {
-          ApplyBrowserCommand(core::browser::BrowserCommand{core::browser::BrowserCommandKind::SetScopeLibrary});
-        }
-        RefreshGroups();
-        RefreshStatus(L"\u5df2\u5220\u9664\u8d44\u6599\u5939");
-        RefreshData(true);
+        auto* group_mutator = library_mutator_;
+        PostLibraryMutation(
+            [group_mutator, group_id] { return group_mutator->DeleteGroup(group_id); },
+            [this, group_id](const common::Status& status) {
+              if (!status.ok()) {
+                RefreshStatus(L"\u5220\u9664\u8d44\u6599\u5939\u5931\u8d25");
+                return;
+              }
+              if (state_.current_group_id() == group_id) {
+                ApplyBrowserCommand(core::browser::BrowserCommand{core::browser::BrowserCommandKind::SetScopeLibrary});
+              }
+              RefreshGroups();
+              RefreshStatus(L"\u5df2\u5220\u9664\u8d44\u6599\u5939");
+              RefreshData(true);
+            });
       });
   dialog_panel_window_.Show(config, std::move(actions));
 }
@@ -283,16 +332,20 @@ void MainWindow::OpenDeleteTagDialog(std::int64_t tag_id) {
         if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        const common::Status status = library_mutator_->DeleteTag(tag_id);
-        if (!status.ok()) {
-          RefreshStatus(L"\u5220\u9664\u6807\u7b7e\u5931\u8d25");
-          return;
-        }
-        ApplyBrowserCommand(core::browser::BrowserCommand{
-            core::browser::BrowserCommandKind::ClearTags});
-        RefreshTags();
-        RefreshStatus(L"Deleted tag");
-        RefreshData(true);
+        auto* tag_mutator = library_mutator_;
+        PostLibraryMutation(
+            [tag_mutator, tag_id] { return tag_mutator->DeleteTag(tag_id); },
+            [this](const common::Status& status) {
+              if (!status.ok()) {
+                RefreshStatus(L"\u5220\u9664\u6807\u7b7e\u5931\u8d25");
+                return;
+              }
+              ApplyBrowserCommand(core::browser::BrowserCommand{
+                  core::browser::BrowserCommandKind::ClearTags});
+              RefreshTags();
+              RefreshStatus(L"Deleted tag");
+              RefreshData(true);
+            });
       });
   dialog_panel_window_.Show(config, std::move(actions));
 }
@@ -319,11 +372,16 @@ bool MainWindow::MoveClipToGroupById(
   if (library_mutator_ == nullptr || clip_id <= 0 || group_id <= 0) {
     return false;
   }
-  if (!library_mutator_->MoveClipsToGroup({clip_id}, group_id).ok()) {
-    return false;
-  }
-  RefreshStatus(success_status);
-  RefreshData(true);
+  auto* move_mutator = library_mutator_;
+  PostLibraryMutation(
+      [move_mutator, clip_id, group_id] { return move_mutator->MoveClipsToGroup({clip_id}, group_id); },
+      [this, success_status](const common::Status& status) {
+        if (!status.ok()) {
+          return;
+        }
+        RefreshStatus(success_status);
+        RefreshData(true);
+      });
   return true;
 }
 
@@ -355,14 +413,25 @@ bool MainWindow::CreateGroupAndMoveClip(std::int64_t clip_id) {
         if (!result.confirmed || library_mutator_ == nullptr) {
           return;
         }
-        std::int64_t group_id = 0;
-        const common::Status status = library_mutator_->EnsureGroup(result.text, &group_id);
-        if (!status.ok() || group_id <= 0) {
-          RefreshStatus(L"\u65b0\u5efa\u8d44\u6599\u5939\u5931\u8d25");
-          return;
-        }
-        RefreshGroups();
-        MoveClipToGroupById(clip_id, group_id, L"\u5df2\u79fb\u52a8\u5230\u65b0\u8d44\u6599\u5939");
+        auto* group_mutator = library_mutator_;
+        const std::wstring group_name = result.text;
+        auto group_id = std::make_shared<std::int64_t>(0);
+        PostLibraryMutation(
+            [group_mutator, group_name, group_id]() -> common::Status {
+              const common::Status status = group_mutator->EnsureGroup(group_name, &*group_id);
+              if (status.ok() && *group_id <= 0) {
+                return common::Status::Error(common::StatusCode::InternalError, "ensure group returned no id");
+              }
+              return status;
+            },
+            [this, clip_id, group_id](const common::Status& status) {
+              if (!status.ok() || *group_id <= 0) {
+                RefreshStatus(L"\u65b0\u5efa\u8d44\u6599\u5939\u5931\u8d25");
+                return;
+              }
+              RefreshGroups();
+              MoveClipToGroupById(clip_id, *group_id, L"\u5df2\u79fb\u52a8\u5230\u65b0\u8d44\u6599\u5939");
+            });
       });
   dialog_panel_window_.Show(config, std::move(actions));
   return true;

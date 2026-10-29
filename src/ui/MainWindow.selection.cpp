@@ -68,26 +68,43 @@ void MainWindow::ToggleFavoriteSelected() {
   if (summary == nullptr || library_mutator_ == nullptr) {
     return;
   }
+  const std::int64_t clip_id = summary->id;
   const bool favorite = !summary->is_favorite;
-  const common::Status status = library_mutator_->ToggleFavorite(summary->id, favorite);
-  if (!status.ok()) {
-    RefreshStatus(L"Update favorite failed");
-    return;
-  }
-  const int page = state_.selected_index_ / state_.page_size_;
-  const int offset = state_.selected_index_ % state_.page_size_;
-  auto it = state_.page_cache_.find(page);
-  if (it != state_.page_cache_.end() && offset >= 0 && offset < static_cast<int>(it->second.size())) {
-    it->second[static_cast<size_t>(offset)].is_favorite = favorite;
-  }
-  if (state_.selected_clip_.has_value()) {
-    state_.selected_clip_->summary.is_favorite = favorite;
-  }
-  if (state_.current_view_ == core::store::ClipView::Favorites && !favorite) {
-    RefreshData(false);
-  } else {
-    RefreshData(true);
-  }
+  const int selected_index = state_.selected_index_;
+  // P0-1 乐观翻转：立即改本地缓存并重绘，写库走异步串行通道；失败回滚 + 提示。
+  // 刷新（含 Favorites 视图的条目移除）推迟到写库完成后，避免异步重查读到旧值。
+  const auto apply_flag = [this, clip_id](bool value) {
+    for (auto& [page_index, clips] : state_.page_cache_) {
+      for (auto& clip : clips) {
+        if (clip.id == clip_id) {
+          clip.is_favorite = value;
+        }
+      }
+    }
+    if (state_.selected_clip_.has_value() && state_.selected_clip_->summary.id == clip_id) {
+      state_.selected_clip_->summary.is_favorite = value;
+    }
+  };
+  apply_flag(favorite);
+  MarkRowDirty(selected_index);
+  InvalidateListRegion();
+  auto* mutator = library_mutator_;
+  PostLibraryMutation(
+      [mutator, clip_id, favorite] { return mutator->ToggleFavorite(clip_id, favorite); },
+      [this, favorite, apply_flag](const common::Status& status) {
+        if (!status.ok()) {
+          apply_flag(!favorite);
+          MarkRowDirty(state_.selected_index_);
+          InvalidateListRegion();
+          RefreshStatus(L"Update favorite failed");
+          return;
+        }
+        if (state_.current_view_ == core::store::ClipView::Favorites && !favorite) {
+          RefreshData(false);
+        } else {
+          RefreshData(true);
+        }
+      });
 }
 
 void MainWindow::TogglePinnedSelected() {
@@ -95,26 +112,42 @@ void MainWindow::TogglePinnedSelected() {
   if (summary == nullptr || library_mutator_ == nullptr) {
     return;
   }
+  const std::int64_t clip_id = summary->id;
   const bool pinned = !summary->is_pinned;
-  const common::Status status = library_mutator_->TogglePinned(summary->id, pinned);
-  if (!status.ok()) {
-    RefreshStatus(L"Update pinned failed");
-    return;
-  }
-  const int page = state_.selected_index_ / state_.page_size_;
-  const int offset = state_.selected_index_ % state_.page_size_;
-  auto it = state_.page_cache_.find(page);
-  if (it != state_.page_cache_.end() && offset >= 0 && offset < static_cast<int>(it->second.size())) {
-    it->second[static_cast<size_t>(offset)].is_pinned = pinned;
-  }
-  if (state_.selected_clip_.has_value()) {
-    state_.selected_clip_->summary.is_pinned = pinned;
-  }
-  if (state_.current_view_ == core::store::ClipView::Pinned && !pinned) {
-    RefreshData(false);
-  } else {
-    RefreshData(true);
-  }
+  const int selected_index = state_.selected_index_;
+  // P0-1 乐观翻转，同 ToggleFavoriteSelected。
+  const auto apply_flag = [this, clip_id](bool value) {
+    for (auto& [page_index, clips] : state_.page_cache_) {
+      for (auto& clip : clips) {
+        if (clip.id == clip_id) {
+          clip.is_pinned = value;
+        }
+      }
+    }
+    if (state_.selected_clip_.has_value() && state_.selected_clip_->summary.id == clip_id) {
+      state_.selected_clip_->summary.is_pinned = value;
+    }
+  };
+  apply_flag(pinned);
+  MarkRowDirty(selected_index);
+  InvalidateListRegion();
+  auto* mutator = library_mutator_;
+  PostLibraryMutation(
+      [mutator, clip_id, pinned] { return mutator->TogglePinned(clip_id, pinned); },
+      [this, pinned, apply_flag](const common::Status& status) {
+        if (!status.ok()) {
+          apply_flag(!pinned);
+          MarkRowDirty(state_.selected_index_);
+          InvalidateListRegion();
+          RefreshStatus(L"Update pinned failed");
+          return;
+        }
+        if (state_.current_view_ == core::store::ClipView::Pinned && !pinned) {
+          RefreshData(false);
+        } else {
+          RefreshData(true);
+        }
+      });
 }
 
 void MainWindow::DeleteSelected() {
@@ -135,15 +168,22 @@ void MainWindow::DeleteSelected() {
     }
   }
 
-  const common::Status status = library_mutator_->DeleteClip(summary->id);
-  if (!status.ok()) {
-    RefreshStatus(L"\u5220\u9664\u5931\u8d25");
-    return;
-  }
-  state_.selected_clip_.reset();
-  state_.actions_.clear();
-  state_.explicit_selected_clip_id_ = replacement_clip_id;
-  RefreshData(true);
+  // P0-1 删除改异步：删除会移动后续所有行的索引，不适合乐观移除；写库在
+  // worker 执行（UI 不阻塞），完成后回投做选中态收尾与刷新。
+  const std::int64_t clip_id = summary->id;
+  auto* mutator = library_mutator_;
+  PostLibraryMutation(
+      [mutator, clip_id] { return mutator->DeleteClip(clip_id); },
+      [this, replacement_clip_id](const common::Status& status) {
+        if (!status.ok()) {
+          RefreshStatus(L"\u5220\u9664\u5931\u8d25");
+          return;
+        }
+        state_.selected_clip_.reset();
+        state_.actions_.clear();
+        state_.explicit_selected_clip_id_ = replacement_clip_id;
+        RefreshData(true);
+      });
 }
 
 void MainWindow::OpenSelectedFolder() {

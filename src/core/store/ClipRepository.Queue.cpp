@@ -44,6 +44,25 @@ common::Status ClipRepository::ReorderQueue(std::int64_t clip_id, int new_sort_o
   return common::Status::Ok();
 }
 
+common::Status ClipRepository::ReorderQueueBatch(const std::vector<ReorderEntry>& entries) {
+  // 单事务 + 复用一条 prepared 语句：N 条 UPDATE 一次提交，任一条失败整体回滚。
+  ScopedTransaction transaction(db_);
+  if (!transaction.status().ok()) {
+    return transaction.status();
+  }
+  Statement statement(db_, "UPDATE paste_queue SET sort_order = ?1 WHERE clip_id = ?2");
+  for (const ReorderEntry& entry : entries) {
+    sqlite3_reset(statement.get());
+    sqlite3_clear_bindings(statement.get());
+    sqlite3_bind_int(statement.get(), 1, entry.sort_order);
+    sqlite3_bind_int64(statement.get(), 2, entry.id);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+      return SqliteError(db_, "批量调整队列顺序失败");  // 析构回滚
+    }
+  }
+  return transaction.Commit();
+}
+
 common::Status ClipRepository::MoveQueueToFront(std::int64_t clip_id, bool auto_pop) {
   int min_sort_order = 0;
   {

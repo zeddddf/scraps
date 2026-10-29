@@ -129,12 +129,12 @@ common::Status AppController::CopyClipForStickerById(std::int64_t id) {
       return common::Status::Error(common::StatusCode::NotFound, "Sticker image path not found.");
     }
     {
-      std::scoped_lock lock(mutex_);
+      std::scoped_lock gate(clipboard_gate_mutex_);  // P2-5:只碰 gate 字段
       internal_writeback_baseline_sequence_ = GetClipboardSequenceNumber();
     }
     common::Status status = clipboard::SetClipboardImageFromFile(path);
     if (status.ok()) {
-      std::scoped_lock lock(mutex_);
+      std::scoped_lock gate(clipboard_gate_mutex_);  // P2-5
       pending_arrival_reason_ = store::ClipArrivalReason::InternalStickerWriteback;
       pending_arrival_sequence_ = GetClipboardSequenceNumber();
     }
@@ -142,12 +142,12 @@ common::Status AppController::CopyClipForStickerById(std::int64_t id) {
   }
 
   {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock gate(clipboard_gate_mutex_);  // P2-5:只碰 gate 字段
     internal_writeback_baseline_sequence_ = GetClipboardSequenceNumber();
   }
   common::Status status = clipboard::WriteClipToClipboard(clip, {}, false);
   if (status.ok()) {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock gate(clipboard_gate_mutex_);  // P2-5
     pending_arrival_reason_ = store::ClipArrivalReason::InternalStickerWriteback;
     pending_arrival_sequence_ = GetClipboardSequenceNumber();
   }
@@ -316,9 +316,11 @@ common::Status AppController::ExecutePasteTransaction(
   // 修饰键等待、前台恢复轮询）。现在它们在 paste worker 线程里跑，这里的数字
   // 只用于验证「UI 不再等待」与后续优化，不参与任何决策。
   common::Stopwatch txn_stopwatch;
+  // P2-5:arm 段只碰 gate 字段——抑制标记与基线序列不再持业务大锁,写回期间
+  // UI 线程的 WM_CLIPBOARDUPDATE 入队零等待。
+  SuppressClipboardMonitor();
   {
-    std::scoped_lock lock(mutex_);
-    SuppressClipboardMonitor();
+    std::scoped_lock gate(clipboard_gate_mutex_);
     // 区间判定下界：写回期间 EmptyClipboard 与 CF_DIB 派生格式合成会多次推进
     // sequence，[baseline, final] 内的事件都算内部写回。
     internal_writeback_baseline_sequence_ = GetClipboardSequenceNumber();
@@ -330,7 +332,7 @@ common::Status AppController::ExecutePasteTransaction(
     return status;
   }
   {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock gate(clipboard_gate_mutex_);  // P2-5
     pending_arrival_reason_ = store::ClipArrivalReason::InternalClipboardWriteback;
     pending_arrival_sequence_ = GetClipboardSequenceNumber();
     last_internal_writeback_identity_key_ = clip.summary.identity_key;

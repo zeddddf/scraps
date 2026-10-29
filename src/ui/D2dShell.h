@@ -7,6 +7,7 @@
 #include <d2d1_1.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <dxgi1_3.h>
 #include <dwrite.h>
 #include <windows.h>
 #include <dcomp.h>
@@ -49,6 +50,12 @@ class D2dShell {
   ID2D1DeviceContext* BeginFrame1_1();
   bool EndFrame();
   bool EndFrame1_1();
+
+  // P2-7:帧泵节流等待。交换链带 FRAME_LATENCY_WAITABLE_OBJECT 创建时,vsync
+  // 节流点从 Present 内部显式提前到 BeginDraw 之前——排队帧数被钉在 1,高负载
+  // (GPU 被别的程序打满)下输入延迟不再随排队帧数增长。无 waitable 句柄时为
+  // no-op(老路径/创建降级)。超时兜底防设备丢失时吊死消息线程。
+  void WaitForFrameLatency(DWORD timeout_ms);
 
   HWND hwnd() const { return hwnd_; }
   float dpi_scale() const { return dpi_scale_; }
@@ -155,6 +162,9 @@ class D2dShell {
   Microsoft::WRL::ComPtr<ID2D1DeviceContext> device_context_;
   Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain_;
   Microsoft::WRL::ComPtr<ID2D1Bitmap1> target_bitmap_;
+  // P2-7 遗留:组合链 waitable 实测永不 signal,已不再赋值;句柄为 null 时
+  // WaitForFrameLatency 是 no-op。保留接口供 hwnd 链未来验证复用。
+  HANDLE frame_latency_waitable_ = nullptr;
 
   // DirectComposition Support
   bool is_dcomp_ = false;
