@@ -1,4 +1,6 @@
 #include "core/store/ClipRepository.Internal.h"
+#include "core/clipboard/ImagePng.h"
+#include "core/policies/ImageIngestPolicy.h"
 
 #include <cstdio>
 
@@ -6,7 +8,7 @@ namespace clipd2d::core::store {
 
 namespace {
 
-constexpr int kCurrentSchemaVersion = 5;
+constexpr int kCurrentSchemaVersion = 6;
 
 constexpr const char* kFreshSchemaSql =
     "CREATE TABLE IF NOT EXISTS clips ("
@@ -519,7 +521,14 @@ common::Status ClipRepository::EnsureSeedData() {
 
 common::Status ClipRepository::MigrateSchema(int from_version) {
   if (from_version == 4) {
-    return MigrateSchemaFrom4To5();
+    common::Status status = MigrateSchemaFrom4To5();
+    if (!status.ok()) {
+      return status;
+    }
+    return MigrateSchemaFrom5To6();
+  }
+  if (from_version == 5) {
+    return MigrateSchemaFrom5To6();
   }
   return common::Status::Error(
       common::StatusCode::InternalError,
@@ -562,6 +571,55 @@ common::Status ClipRepository::MigrateSchemaFrom4To5() {
     }
   }
 
+  return transaction.Commit();
+}
+
+common::Status ClipRepository::MigrateSchemaFrom5To6() {
+  // 5→6：为历史大图补生成缩略预览并回写 preview_path。v5 及之前 ingest 不
+  // 生成 preview，大图悬停预览/OCR 每次全量解码原图（实测 2557px PNG 约
+  // 200ms/张）。文件生成尽力而为：单张失败跳过（缺失仅回退慢路径，不影响
+  // 数据完整性），成功的 DB 更新在同一事务内提交。
+  Statement select_missing(
+      db_,
+      "SELECT id, storage_path FROM clips "
+      "WHERE is_large_image = 1 AND content_type = 'image' "
+      "AND (preview_path IS NULL OR preview_path = '') AND storage_path != ''");
+  std::vector<std::pair<std::int64_t, std::wstring>> missing;
+  while (sqlite3_step(select_missing.get()) == SQLITE_ROW) {
+    missing.emplace_back(
+        sqlite3_column_int64(select_missing.get(), 0),
+        ToWideOrEmpty(ColumnString(select_missing.get(), 1).c_str()));
+  }
+  if (missing.empty()) {
+    return common::Status::Ok();
+  }
+
+  ScopedTransaction transaction(db_);
+  if (!transaction.status().ok()) {
+    return transaction.status();
+  }
+  Statement update(db_, "UPDATE clips SET preview_path = ?1 WHERE id = ?2");
+  int succeeded = 0;
+  for (const auto& [clip_id, storage_path] : missing) {
+    const std::wstring derived = policies::DeriveLargeImagePreviewPath(storage_path);
+    if (derived.empty() ||
+        !clipboard::SaveScaledImageFileToPng(storage_path, derived, 1024, 1024).ok()) {
+      continue;
+    }
+    sqlite3_reset(update.get());
+    sqlite3_clear_bindings(update.get());
+    BindWide(update.get(), 1, derived);
+    sqlite3_bind_int64(update.get(), 2, clip_id);
+    if (sqlite3_step(update.get()) != SQLITE_DONE) {
+      return SqliteError(db_, "Migrate large image preview path failed.");
+    }
+    ++succeeded;
+  }
+  common::WriteLog(
+      common::LogLevel::Info,
+      "db.migrate",
+      "5to6 large_image_preview total=" + std::to_string(missing.size()) +
+          " succeeded=" + std::to_string(succeeded));
   return transaction.Commit();
 }
 

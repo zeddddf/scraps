@@ -196,9 +196,6 @@ class AppController : public IHistoryFeed,
   void PasteWorkerLoop();
   void IngestWorkerLoop();
   void OcrWorkerLoop();
-  // OCR worker 启动时的一次性自愈：为缺失缩略预览的大图批量生成 1024 缩略
-  // 版并回写 preview_path（历史大图原图解码可达数百毫秒，悬停预览/OCR 吃缩略版）。
-  void BackfillLargeImagePreviewsOnWorker();
   void BackupWorkerLoop();
   void StartPendingImageIngest(std::int64_t clip_id, store::CapturedClip clip);
   common::Status QueueImageOcrJob(std::int64_t clip_id, bool force_rerun, bool allow_when_disabled);

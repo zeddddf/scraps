@@ -1,6 +1,4 @@
 #include "core/commands/AppController.Internal.h"
-#include "core/clipboard/ImagePng.h"
-#include "core/policies/ImageIngestPolicy.h"
 
 #include <filesystem>
 #include <winrt/Windows.Foundation.h>
@@ -124,51 +122,8 @@ common::Status AppController::PasteOcrTextById(
   return ExecutePasteTransaction(clip, &target_context, nullptr, route, clip.ocr_text, true);
 }
 
-void AppController::BackfillLargeImagePreviewsOnWorker() {
-  std::vector<std::pair<std::int64_t, std::wstring>> pending;
-  {
-    std::scoped_lock lock(mutex_);
-    if (shutting_down_) {
-      return;
-    }
-    pending = repository_.ListLargeImagesMissingPreview();
-  }
-  if (pending.empty()) {
-    return;
-  }
-  common::WriteLog(common::LogLevel::Info,
-                   "ocr.job",
-                   "preview_backfill_begin count=" + std::to_string(pending.size()));
-  int succeeded = 0;
-  for (const auto& [clip_id, storage_path] : pending) {
-    if (shutting_down_.load()) {
-      return;
-    }
-    const std::wstring derived = policies::DeriveLargeImagePreviewPath(storage_path);
-    if (derived.empty()) {
-      continue;
-    }
-    if (!clipboard::SaveScaledImageFileToPng(storage_path, derived, 1024, 1024).ok()) {
-      continue;
-    }
-    {
-      std::scoped_lock lock(mutex_);
-      if (shutting_down_) {
-        return;
-      }
-      (void)repository_.SetLargeImagePreviewPath(clip_id, derived);
-    }
-    ++succeeded;
-  }
-  common::WriteLog(common::LogLevel::Info,
-                   "ocr.job",
-                   "preview_backfill_done total=" + std::to_string(pending.size()) +
-                       " succeeded=" + std::to_string(succeeded));
-}
-
 void AppController::OcrWorkerLoop() {
   winrt::init_apartment(winrt::apartment_type::multi_threaded);
-  BackfillLargeImagePreviewsOnWorker();
   for (;;) {
     PendingOcrJob job;
     store::AppSettings settings_snapshot;
