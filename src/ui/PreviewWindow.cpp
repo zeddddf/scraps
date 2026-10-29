@@ -285,6 +285,7 @@ void PreviewWindow::Destroy() {
 
 void PreviewWindow::ShowClip(const core::store::ClipRecord& clip, HostActions actions) {
   host_actions_ = std::move(actions);
+  showing_compact_ = false;
   InitForClip(clip);
   if (hwnd_ != nullptr) {
     const SIZE size = ComputePreferredSize(false);
@@ -386,6 +387,7 @@ void PreviewWindow::ShowClipAt(
     const RECT& anchor_screen,
     bool compact) {
   host_actions_ = std::move(actions);
+  showing_compact_ = compact;
   InitForClip(clip);
   if (hwnd_ == nullptr) {
     return;
@@ -727,11 +729,14 @@ void PreviewWindow::HandleImageReady(LPARAM l_param) {
     preview_height_ = payload->height;
     decoded_image_clip_id_ = clip_->summary.id;  // 同条目重建时复用位图
   }
-  // 自适应：按解码出的实际尺寸重算窗口大小。宽度变化时右缘会平移——
-  // 若扩宽后压住面板或越出屏幕，按锚重定位（此前只 SWP_NOMOVE 改尺寸，
-  // 图片条目解码完成后右缘向右扩展 110px 插进面板，正是"压面板"的元凶）。
+  // 自适应：按解码出的实际尺寸重算窗口大小——沿用当前展示档位（悬停
+  // compact / 选中全尺寸），否则悬停小窗会在解码完成瞬间跳成选中档大窗
+  // （小图解码先于窗口可见，只有大图能观察到此跳变）。宽度变化时右缘会
+  // 平移——若扩宽后压住面板或越出屏幕，按锚重定位（此前只 SWP_NOMOVE 改
+  // 尺寸，图片条目解码完成后右缘向右扩展 110px 插进面板，正是"压面板"的
+  // 元凶）。
   if (hwnd_ != nullptr && IsWindowVisible(hwnd_)) {
-    const SIZE size = ComputePreferredSize(false);
+    const SIZE size = ComputePreferredSize(showing_compact_);
     RECT self{};
     if (GetWindowRect(hwnd_, &self)) {
       const int new_right = static_cast<int>(self.left) + size.cx;
