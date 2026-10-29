@@ -419,6 +419,19 @@ void MainWindow::MarkRowDirty(int index) {
   MarkFrameDirty();
 }
 
+void MainWindow::MarkClipRowsDirty(std::int64_t clip_id) {
+  if (clip_id <= 0) {
+    return;
+  }
+  for (const auto& [page_index, clips] : state_.page_cache_) {
+    for (size_t offset = 0; offset < clips.size(); ++offset) {
+      if (clips[offset].id == clip_id) {
+        MarkRowDirty(page_index * state_.page_size_ + static_cast<int>(offset));
+      }
+    }
+  }
+}
+
 void MainWindow::MarkRangeDirty(int start_index, int end_index) {
   if (end_index < start_index) {
     return;

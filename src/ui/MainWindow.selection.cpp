@@ -91,10 +91,11 @@ void MainWindow::ToggleFavoriteSelected() {
   auto* mutator = library_mutator_;
   PostLibraryMutation(
       [mutator, clip_id, favorite] { return mutator->ToggleFavorite(clip_id, favorite); },
-      [this, favorite, apply_flag](const common::Status& status) {
+      [this, favorite, clip_id, apply_flag](const common::Status& status) {
         if (!status.ok()) {
           apply_flag(!favorite);
-          MarkRowDirty(state_.selected_index_);
+          // 回滚重绘按 clip_id 定位行——异步窗口内 selected_index_ 可能已变。
+          MarkClipRowsDirty(clip_id);
           InvalidateListRegion();
           RefreshStatus(L"Update favorite failed");
           return;
@@ -134,10 +135,11 @@ void MainWindow::TogglePinnedSelected() {
   auto* mutator = library_mutator_;
   PostLibraryMutation(
       [mutator, clip_id, pinned] { return mutator->TogglePinned(clip_id, pinned); },
-      [this, pinned, apply_flag](const common::Status& status) {
+      [this, pinned, clip_id, apply_flag](const common::Status& status) {
         if (!status.ok()) {
           apply_flag(!pinned);
-          MarkRowDirty(state_.selected_index_);
+          // 回滚重绘按 clip_id 定位行——异步窗口内 selected_index_ 可能已变。
+          MarkClipRowsDirty(clip_id);
           InvalidateListRegion();
           RefreshStatus(L"Update pinned failed");
           return;

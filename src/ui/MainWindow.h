@@ -444,6 +444,9 @@ public:
   std::unordered_set<std::wstring> BuildProtectedHiddenThumbnailKeys() const;
   void MarkAllVisibleRowsDirty();
   void MarkRowDirty(int index);
+  // 乐观更新回滚用：按 clip_id 把所有缓存页中该条目所在行标脏（行索引在
+  // 异步写库窗口内可能已被选中移动/翻页改变，不能依赖调用时的 selected_index_）。
+  void MarkClipRowsDirty(std::int64_t clip_id);
   void MarkRangeDirty(int start_index, int end_index);
   void MarkDirtyRowsForShellIcon(
       visual_assets::ShellIconPurpose purpose,
@@ -538,10 +541,12 @@ public:
   bool IsPanelMenuTogglePoint(POINT screen_point, PanelMenuKind* kind = nullptr) const;
   bool IsOverlayDialogVisible() const;
   void UpdateOverlayDialogLayout();
-  void OpenCreateGroupDialog();
-  void OpenRenameGroupDialog(std::int64_t group_id);
-  void OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_after_create);
-  void OpenRenameTagDialog(std::int64_t tag_id);
+  void OpenCreateGroupDialog(const std::wstring& retry_text = L"");
+  void OpenRenameGroupDialog(std::int64_t group_id, const std::wstring& retry_text = L"");
+  void OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_after_create,
+                           const std::wstring& retry_text = L"", const std::wstring& retry_color = L"");
+  void OpenRenameTagDialog(std::int64_t tag_id, const std::wstring& retry_text = L"",
+                           const std::wstring& retry_color = L"");
   void OpenDeleteGroupDialog(std::int64_t group_id);
   void OpenDeleteTagDialog(std::int64_t tag_id);
   void OpenOverlayDialog(OverlayDialogState state);

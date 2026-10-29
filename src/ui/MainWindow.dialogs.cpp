@@ -50,7 +50,7 @@ const core::store::GroupRecord* MainWindow::FindGroupById(std::int64_t group_id)
   return it != state_.groups_.end() ? &(*it) : nullptr;
 }
 
-void MainWindow::OpenCreateGroupDialog() {
+void MainWindow::OpenCreateGroupDialog(const std::wstring& retry_text) {
   if (!EnsureDialogPanelWindowCreated().ok()) {
     RefreshStatus(L"对话框初始化失败");
     return;
@@ -64,6 +64,7 @@ void MainWindow::OpenCreateGroupDialog() {
   config.confirm_text = L"\u65b0\u5efa";
   config.cancel_text = L"\u53d6\u6d88";
   config.empty_text_error = L"\u8d44\u6599\u5939\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002";
+  config.initial_text = retry_text;
 
   auto actions = MakeDialogPanelHostActions(
       this,
@@ -83,9 +84,11 @@ void MainWindow::OpenCreateGroupDialog() {
               }
               return status;
             },
-            [this, group_id](const common::Status& status) {
+            [this, group_name, group_id](const common::Status& status) {
               if (!status.ok() || *group_id <= 0) {
+                // 失败恢复：重开对话框预填用户输入，避免输入丢失（审查 P1-1）。
                 RefreshStatus(L"\u65b0\u5efa\u8d44\u6599\u5939\u5931\u8d25");
+                OpenCreateGroupDialog(group_name);
                 return;
               }
               RefreshGroups();
@@ -96,7 +99,7 @@ void MainWindow::OpenCreateGroupDialog() {
   dialog_panel_window_.Show(config, std::move(actions));
 }
 
-void MainWindow::OpenRenameGroupDialog(std::int64_t group_id) {
+void MainWindow::OpenRenameGroupDialog(std::int64_t group_id, const std::wstring& retry_text) {
   const core::store::GroupRecord* group = FindGroupById(group_id);
   if (group == nullptr) {
     return;
@@ -113,7 +116,7 @@ void MainWindow::OpenRenameGroupDialog(std::int64_t group_id) {
   config.prompt = L"\u8d44\u6599\u5939\u540d\u79f0";
   config.confirm_text = L"\u4fdd\u5b58";
   config.cancel_text = L"\u53d6\u6d88";
-  config.initial_text = group->name;
+  config.initial_text = retry_text.empty() ? group->name : retry_text;
   config.empty_text_error = L"\u8d44\u6599\u5939\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002";
 
   auto actions = MakeDialogPanelHostActions(
@@ -128,7 +131,9 @@ void MainWindow::OpenRenameGroupDialog(std::int64_t group_id) {
             [group_mutator, group_id, group_name] { return group_mutator->RenameGroup(group_id, group_name); },
             [this, group_id, group_name](const common::Status& status) {
               if (!status.ok()) {
+                // 失败恢复：重开对话框预填用户输入（审查 P1-1）。
                 RefreshStatus(L"\u91cd\u547d\u540d\u8d44\u6599\u5939\u5931\u8d25");
+                OpenRenameGroupDialog(group_id, group_name);
                 return;
               }
               if (state_.current_group_id() == group_id) {
@@ -142,7 +147,8 @@ void MainWindow::OpenRenameGroupDialog(std::int64_t group_id) {
   dialog_panel_window_.Show(config, std::move(actions));
 }
 
-void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_after_create) {
+void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_after_create,
+                                     const std::wstring& retry_text, const std::wstring& retry_color) {
   if (!EnsureDialogPanelWindowCreated().ok()) {
     RefreshStatus(L"对话框初始化失败");
     return;
@@ -157,7 +163,8 @@ void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_aft
   config.confirm_text = L"\u65b0\u5efa";
   config.cancel_text = L"\u53d6\u6d88";
   config.empty_text_error = L"\u6807\u7b7e\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002";
-  config.initial_color = L"#3B82F6";
+  config.initial_text = retry_text;
+  config.initial_color = retry_color.empty() ? L"#3B82F6" : retry_color;
   config.color_options = BuildTagDialogColorOptions();
 
   auto actions = MakeDialogPanelHostActions(
@@ -190,9 +197,11 @@ void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_aft
               }
               return status;
             },
-            [this, clip_id, tag_mutator, tag_id, finish](const common::Status& status) {
+            [this, clip_id, tag_mutator, tag_name, tag_color, tag_id, apply_filter_after_create, finish](const common::Status& status) {
               if (!status.ok() || *tag_id <= 0) {
+                // 失败恢复：重开对话框预填名称与颜色（审查 P1-1）。
                 RefreshStatus(L"\u65b0\u5efa\u6807\u7b7e\u5931\u8d25");
+                OpenCreateTagDialog(clip_id, apply_filter_after_create, tag_name, tag_color);
                 return;
               }
               if (clip_id > 0) {
@@ -214,7 +223,8 @@ void MainWindow::OpenCreateTagDialog(std::int64_t clip_id, bool apply_filter_aft
   dialog_panel_window_.Show(config, std::move(actions));
 }
 
-void MainWindow::OpenRenameTagDialog(std::int64_t tag_id) {
+void MainWindow::OpenRenameTagDialog(std::int64_t tag_id, const std::wstring& retry_text,
+                                     const std::wstring& retry_color) {
   const auto it = std::find_if(state_.tags_.begin(), state_.tags_.end(), [tag_id](const core::store::TagRecord& tag) {
     return tag.id == tag_id;
   });
@@ -234,8 +244,8 @@ void MainWindow::OpenRenameTagDialog(std::int64_t tag_id) {
   config.prompt = L"\u6807\u7b7e\u540d\u79f0";
   config.confirm_text = L"\u4fdd\u5b58";
   config.cancel_text = L"\u53d6\u6d88";
-  config.initial_text = it->name;
-  config.initial_color = it->color;
+  config.initial_text = retry_text.empty() ? it->name : retry_text;
+  config.initial_color = retry_color.empty() ? it->color : retry_color;
   config.empty_text_error = L"\u6807\u7b7e\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002";
   config.color_options = BuildTagDialogColorOptions();
 
@@ -250,9 +260,11 @@ void MainWindow::OpenRenameTagDialog(std::int64_t tag_id) {
         const std::wstring tag_color = result.color;
         PostLibraryMutation(
             [tag_mutator, tag_id, tag_name, tag_color] { return tag_mutator->RenameTag(tag_id, tag_name, tag_color); },
-            [this, tag_id](const common::Status& status) {
+            [this, tag_id, tag_name, tag_color](const common::Status& status) {
               if (!status.ok()) {
+                // 失败恢复：重开对话框预填用户输入（审查 P1-1）。
                 RefreshStatus(L"Rename tag failed");
+                OpenRenameTagDialog(tag_id, tag_name, tag_color);
                 return;
               }
               core::browser::BrowserCommand select_tag;
