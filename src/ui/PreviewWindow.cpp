@@ -557,10 +557,16 @@ void PreviewWindow::LayoutControls() {
       rich->rect = D2D1::RectF(plain->rect.left - kGap - 68.0f, kTabTop, plain->rect.left - kGap, kTabTop + kTabHeight);
     }
   }
-  // 编辑开关：仅纯文本条目显示（HTML tab 不占位），放 meta 行右端（与
-  // HTML tab 同一水平线）。
+  // 编辑开关位置：纯文本条目（无 tab 占位）放 meta 行右端；HTML 条目 tab
+  // 占了右端，编辑 pill 排到富文本 tab 左侧。
   if (PillButton* edit = FindButton(kIdEditToggle)) {
-    edit->rect = D2D1::RectF(right - kPad - 68.0f, 36.0f, right - kPad, 60.0f);
+    if (PillButton* rich = FindButton(kIdHtmlRich);
+        rich != nullptr && clip_.has_value() &&
+        clip_->summary.content_type == core::store::ClipContentType::Html) {
+      edit->rect = D2D1::RectF(rich->rect.left - 6.0f - 68.0f, 36.0f, rich->rect.left - 6.0f, 60.0f);
+    } else {
+      edit->rect = D2D1::RectF(right - kPad - 68.0f, 36.0f, right - kPad, 60.0f);
+    }
   }
   // 图片操作行：分隔线之下 y 76..104；左起主操作链，右端"系统默认打开"。
   if (PillButton* image_copy = FindButton(kIdImageCopy)) {
@@ -620,8 +626,11 @@ void PreviewWindow::UpdateVisibleControls() {
   set_button(kIdOcrCopy, is_image && enable_image_ocr, has_ocr_text);
   set_button(kIdOcrPaste, is_image && enable_image_ocr, has_ocr_text);
   set_button(kIdOcrRerun, is_image && enable_image_ocr, ocr_provider_message_.empty());
-  // 编辑开关：仅纯文本条目 + 宿主支持提交（编辑保存=写回剪贴板生成新条目）。
-  set_button(kIdEditToggle, is_text && static_cast<bool>(host_actions_.on_commit_text));
+  // 编辑开关：纯文本条目 + HTML 纯文本视图（编辑提交=把改后的纯文本写回
+  // 剪贴板生成新 Text 条目，历史原样保留）。富文本/源码视图不可编辑。
+  set_button(kIdEditToggle,
+             (is_text || (is_html && html_mode_ == PreviewMode::kPlainText)) &&
+                 static_cast<bool>(host_actions_.on_commit_text));
   if (PillButton* edit = FindButton(kIdEditToggle)) {
     edit->label = editing_ ? L"完成" : L"编辑";
   }
@@ -922,18 +931,37 @@ void PreviewWindow::UpdateHoverFromPoint(const POINT& pt) {
 void PreviewWindow::ActivateAction(int id) {
   switch (id) {
     case kIdHtmlRich:
+      // 切模式先退出编辑（提交）：编辑中切到别的视图，防抖提交的是该视图
+      // 的文本而不是用户想保存的内容。
+      if (editing_) {
+        ExitEditMode(true);
+      }
       html_mode_ = PreviewMode::kRichText;
       UpdateWebContent();
+      UpdateRichEditContent();  // 回切富文本：清掉纯文本视图残留，内容归 WebView
+      UpdateVisibleControls();  // RichEdit/编辑 pill 的显隐随视图切换
       InvalidateRect(hwnd_, nullptr, FALSE);
       return;
     case kIdHtmlPlain:
+      if (editing_) {
+        ExitEditMode(true);
+      }
       html_mode_ = PreviewMode::kPlainText;
+      // 正文由 RichEdit 承担：切 tab 必须重新填充（InitForClip 时模式是
+      // kRichText，RichEdit 此前没装纯文本内容）。
+      UpdateRichEditContent();
       UpdateWebContent();
+      UpdateVisibleControls();
       InvalidateRect(hwnd_, nullptr, FALSE);
       return;
     case kIdHtmlSource:
+      if (editing_) {
+        ExitEditMode(true);
+      }
       html_mode_ = PreviewMode::kSource;
+      UpdateRichEditContent();
       UpdateWebContent();
+      UpdateVisibleControls();
       InvalidateRect(hwnd_, nullptr, FALSE);
       return;
     case kIdOpenExternal:
@@ -1252,6 +1280,7 @@ void PreviewWindow::UpdateWebContent() {
   // RichEdit 接管正文——否则富文本模式下既没 WebView 又没有文本视图，正文空白。
   if (webview_failed_) {
     html_mode_ = PreviewMode::kPlainText;
+    UpdateRichEditContent();
     UpdateVisibleControls();
     ApplyWebViewBounds();
     return;
@@ -1265,6 +1294,7 @@ void PreviewWindow::UpdateWebContent() {
   // 回退纯文本模式，避免"空白预览"。
   if (html_fragment_.empty()) {
     html_mode_ = PreviewMode::kPlainText;
+    UpdateRichEditContent();
     UpdateVisibleControls();
     ApplyWebViewBounds();
     return;
@@ -1284,7 +1314,9 @@ void PreviewWindow::UpdateWebContent() {
   // 几百 KB DOM 是导航延迟大头；截断回退到最近 UTF-8 边界，尾部标签由
   // 浏览器容错闭合。
   constexpr size_t kPreviewFragmentCap = 128 * 1024;
-  std::string fragment = std::move(html_fragment_);
+  // 拷贝而非 move：html_fragment_ 是条目级缓存（源码视图/尺寸测量还要用），
+  // move 出去后源码 tab 只能拿到空串。
+  std::string fragment = html_fragment_;
   if (fragment.size() > kPreviewFragmentCap) {
     size_t cut = kPreviewFragmentCap;
     while (cut > 0 && (static_cast<unsigned char>(fragment[cut]) & 0xC0) == 0x80) {
@@ -1298,6 +1330,7 @@ void PreviewWindow::UpdateWebContent() {
   if (BuildPreviewHtmlDoc(fragment, dark, &doc) == PreviewDocStatus::kTooLarge) {
     html_mode_ = PreviewMode::kPlainText;
     webview_clip_id_ = -1;
+    UpdateRichEditContent();
     UpdateVisibleControls();
     ApplyWebViewBounds();
     return;
