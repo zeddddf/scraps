@@ -243,6 +243,9 @@ class PreviewWindow {
   std::uint64_t image_generation_ = 0;
   std::wstring image_decode_path_;
   bool image_load_pending_ = false;
+  // 已成功解码的位图所属条目 id：同条目重入（OCR 完成后的详情刷新会再次
+  // ShowClip→InitForClip）时保留位图，避免“图片→解码中→图片”闪烁与重复解码。
+  std::int64_t decoded_image_clip_id_ = -1;
 
   Microsoft::WRL::ComPtr<ICoreWebView2> webview_;
   Microsoft::WRL::ComPtr<ICoreWebView2Controller> webview_controller_;

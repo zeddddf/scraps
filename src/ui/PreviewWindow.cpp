@@ -649,7 +649,16 @@ void PreviewWindow::UpdateVisibleControls() {
 }
 
 void PreviewWindow::LoadPreviewImage() {
+  // 同条目重入（OCR 完成 → RefreshData → HandleClipReady 会以同 id 再次
+  // ShowClip→InitForClip）：位图已是本条目的解码结果，直接复用，不清屏、
+  // 不重投递——否则画面走一遍“图片→解码中→图片”，同一张图解码两遍。
+  if (preview_bitmap_ != nullptr && clip_.has_value() &&
+      decoded_image_clip_id_ == clip_->summary.id) {
+    image_load_pending_ = false;
+    return;
+  }
   preview_bitmap_.Reset();
+  decoded_image_clip_id_ = -1;
   preview_width_ = 0;
   preview_height_ = 0;
   image_zoom_ = 1.0f;
@@ -716,6 +725,7 @@ void PreviewWindow::HandleImageReady(LPARAM l_param) {
     d2d_shell_.CreateBitmapFromBgra(payload->width, payload->height, payload->pixels, preview_bitmap_.ReleaseAndGetAddressOf());
     preview_width_ = payload->width;
     preview_height_ = payload->height;
+    decoded_image_clip_id_ = clip_->summary.id;  // 同条目重建时复用位图
   }
   // 自适应：按解码出的实际尺寸重算窗口大小。宽度变化时右缘会平移——
   // 若扩宽后压住面板或越出屏幕，按锚重定位（此前只 SWP_NOMOVE 改尺寸，

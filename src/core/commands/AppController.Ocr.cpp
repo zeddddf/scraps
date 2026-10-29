@@ -55,6 +55,10 @@ common::Status AppController::QueueImageOcrJob(std::int64_t id, bool force_rerun
   active_ocr_jobs_.insert(id);
   pending_ocr_jobs_.push_back(PendingOcrJob{id, force_rerun});
   ocr_worker_cv_.notify_one();
+  common::WriteLog(common::LogLevel::Info,
+                   "ocr.job",
+                   "queued clip_id=" + std::to_string(id) +
+                       " force=" + (force_rerun ? "1" : "0"));
   return common::Status::Ok();
 }
 
@@ -63,7 +67,9 @@ common::Status AppController::RequestImageOcr(std::int64_t id, bool force_rerun)
 }
 
 common::Status AppController::GetImageOcrProviderStatus(std::wstring* message) const {
-  std::scoped_lock lock(mutex_);
+  // 不取 mutex_：本函数只返回固定引擎名，不读任何共享状态。此前每次悬停
+  // 图片条目都会在 UI 线程抢大锁，与 OCR worker 的 FinalizeImageOcr 写库
+  // 竞争（实测快速扫图时每行排队 10~12ms，见 2026-10-29 preview.show 日志）。
   if (message != nullptr) {
     *message = L"Windows OCR";
   }
@@ -156,17 +162,33 @@ void AppController::OcrWorkerLoop() {
     } else {
       auto provider = core::ocr::CreateWindowsOcrProvider();
       core::ocr::ImageOcrResult result;
+      // 识别全程不持锁；QPC 计时（GetTickCount64 的 15.625ms 粒度不可用）。
+      common::Stopwatch recognize_sw;
       status = provider->Recognize(
           core::ocr::ImageOcrRequest{
               .image_path = input_path,
               .language_hint = settings_snapshot.ocr_language_hint,
           },
           &result);
+      const std::int64_t recognize_us = recognize_sw.ElapsedUs();
       if (status.ok()) {
-        std::scoped_lock lock(mutex_);
-        if (!shutting_down_) {
-          status = repository_.FinalizeImageOcr(job.clip_id, result.utf8_text, result.engine_name, result.language_used);
+        {
+          std::scoped_lock lock(mutex_);
+          if (!shutting_down_) {
+            status = repository_.FinalizeImageOcr(job.clip_id, result.utf8_text, result.engine_name, result.language_used);
+          }
         }
+        common::WriteLog(common::LogLevel::Info,
+                         "ocr.job",
+                         "done clip_id=" + std::to_string(job.clip_id) +
+                             " recognize_ms=" + common::FormatMs(recognize_us) +
+                             " chars=" + std::to_string(result.utf8_text.size()));
+      } else {
+        common::WriteLog(common::LogLevel::Warning,
+                         "ocr.job",
+                         "failed clip_id=" + std::to_string(job.clip_id) +
+                             " recognize_ms=" + common::FormatMs(recognize_us) +
+                             " message=" + status.message);
       }
     }
 
