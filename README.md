@@ -1,7 +1,7 @@
 # Scraps
 
 <p align="center">
-  <img src="assets/brand/hero.png" alt="Scraps — the fastest, lightest native clipboard manager for Windows · 最快最轻的 Windows 原生剪贴板管理器（剪贴板历史 / 队列粘贴 / CLI）" width="880">
+  <img src="assets/brand/hero.png" alt="Scraps — the fastest, lightest native clipboard manager for Windows · clipboard history, paste queue, CLI" width="880">
 </p>
 
 <p align="center">
@@ -10,96 +10,112 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/zeddddf/scraps" alt="License"></a>
 </p>
 
-**最快最轻的 Windows 原生剪贴板管理器**
-*The fastest, lightest native clipboard manager for Windows.*
+**The fastest, lightest native clipboard manager for Windows.**
+*A free, open-source alternative to Ditto and the built-in Windows clipboard history (Win+V) — Win32 + Direct2D, zero runtime dependencies, 100% local.*
 
-简体中文 | [English](README.en.md)
+English | [简体中文](README.zh-CN.md)
 
-Scraps 是一个原生 Win32 剪贴板管理器：单进程常驻、D2D 直绘、无任何运行时依赖，
-在十万级历史条目下依然保持瞬时响应。所有数据 100% 本地存储，不上传任何内容。
+Scraps is a native Win32 clipboard manager: single resident process, Direct2D direct rendering, zero runtime dependencies — instant response even with 100k+ history entries. All data stays 100% local. No accounts, no telemetry, no cloud.
 
-## 下载
+## Install
 
-| 版本 | 说明 |
+One line with [winget](https://github.com/microsoft/winget-cli):
+
+```bat
+winget install zeddddf.Scraps
+```
+
+Or grab a binary from [Releases](https://github.com/zeddddf/scraps/releases/latest):
+
+| Edition | File | Notes |
+|---|---|---|
+| Installer | `Scraps-x.y.z-setup.exe` | Guided setup, start menu / desktop shortcuts, uninstaller included |
+| Portable | `Scraps-x.y.z-portable.zip` | Extract and run, no installation |
+
+History and settings are stored in `%LOCALAPPDATA%\Scraps`. Installer and portable editions are interchangeable; uninstalling never deletes your data.
+
+## Features
+
+- Clipboard monitoring and history for text / HTML / RTF / images / file lists
+- Full-text search backed by `SQLite + FTS5`, async paging, result highlighting
+- Favorites, pins, groups, tag system and tag filtering
+- `history / library` layered storage, time-range filtering and time grouping
+- Paste queue and sequential pasting
+- Usage statistics view
+- Drag-and-drop export of file / image entries
+- Global hotkey and persistent settings
+- Named Pipe local IPC and CLI (`scraps-cli`) for scripting
+- Screenshot subprocess (WGC / DXGI / GDI backends)
+
+## How it compares
+
+| | Scraps | Windows built-in (Win+V) | Ditto |
+|---|---|---|---|
+| History capacity | 100k+ entries, layered history / library | Small fixed buffer | Large |
+| Full-text search | SQLite FTS5, highlighted, instant at 100k+ | Basic filter | Yes |
+| Tags / groups / favorites | Yes | Pinned only | Yes |
+| Paste queue / sequential paste | Yes | No | Yes |
+| CLI & scripting | Yes (`scraps-cli`, Named Pipe IPC) | No | Limited |
+| Cloud / phone sync | No — 100% local by design | Yes (Microsoft account) | LAN only |
+| UI | Native Direct2D direct rendering, Win11 style, virtualized list at 60 FPS | System UI | Classic UI |
+| Runtime dependencies | None | Built-in | None |
+| License | GPL-3.0 open source | Part of Windows | GPL |
+
+## Performance
+
+The virtualized list uses a Fenwick-tree index plus a stable slot pool; visible-range lookup and row-height queries are O(1)/O(log N):
+
+| Scenario | Per-frame cost |
 |---|---|
-| [安装版](https://github.com/zeddddf/scraps/releases/latest) `Scraps-x.y.z-setup.exe` | 向导安装、开始菜单/桌面快捷方式、可卸载 |
-| [便携版](https://github.com/zeddddf/scraps/releases/latest) `Scraps-x.y.z-portable.zip` | 解压即用，免安装 |
+| 10K entries, variable row heights | 1.7~4.4 μs |
+| 100K entries, variable row heights | 1.7~2.5 μs |
+| Visible-range binary search (variable, 100K) | 25.5 ns / call |
+| Visible-range lookup (fixed height) | 4.5 ns / call |
 
-历史记录与设置存储于 `%LOCALAPPDATA%\Scraps`，安装版与便携版通用，卸载不会删除用户数据。
+10K → 100K shows almost no degradation; headroom against the 60 FPS frame budget (16.7 ms) is roughly four orders of magnitude.
 
+## FAQ
 
-## 特性
+**How is Scraps different from Ditto or the PowerToys clipboard?**
+Scraps is pure native Win32 + Direct2D — no runtime dependencies, no Electron. The virtualized list is built on a Fenwick index with variable row heights, staying instant at 100k entries. Compared to the PowerToys clipboard it offers far richer history management (tags / groups / paste queue / library layers) plus a scriptable CLI.
 
-- 剪贴板监听与历史记录，采集文本 / HTML / RTF / 图片 / 文件列表
-- `SQLite + FTS5` 全文存储，异步分页查询，搜索结果高亮
-- 收藏、置顶、分组、标签系统与标签过滤
-- `history / library` 分层存储、时间范围过滤与时间分组
-- 队列与顺序粘贴
-- 常用统计视图
-- 文件/图片条目外部拖拽导出
-- 全局唤出热键与设置持久化
-- Named Pipe 本地 IPC 与 CLI（`scraps-cli`），可脚本化
-- 截图子进程（WGC/DXGI/GDI 多后端）
+**Where is my data stored? Is it uploaded anywhere?**
+Everything lives in `%LOCALAPPDATA%\Scraps` (SQLite + FTS5). No uploads, no telemetry, no accounts — Scraps works fully offline.
 
-## 性能
+**Which Windows versions are supported?**
+Windows 10 / 11 (x64).
 
-虚拟列表内核采用 Fenwick 树索引 + 稳定槽位池，可见范围计算与行高查询均为
-O(1)/O(log N)：
+## Build
 
-| 场景 | 每帧耗时 |
-|---|---|
-| 10K 条目，变高行 | 1.7~4.4 μs |
-| 100K 条目，变高行 | 1.7~2.5 μs |
-| 可见范围二分（变高，100K） | 25.5 ns / 次 |
-| 可见范围计算（定高） | 4.5 ns / 次 |
-
-10K → 100K 几乎无衰减；60FPS 帧预算（16.7 ms）余量约四个数量级。
-
-## 构建
-
-需要 Visual Studio 2022（x64）与 CMake ≥ 3.28。
+Requires Visual Studio 2022 (x64) and CMake ≥ 3.28.
 
 ```bat
 build_release.bat
 ```
 
-或手动：
+Or manually:
 
 ```bat
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-产物位于 `build/Release/`：
+Artifacts land in `build/Release/`:
 
-- `Scraps.exe` — 主程序（托盘常驻，单实例）
-- `scraps-cli.exe` — 命令行工具（`--help` 查看用法）
-- `scraps_tests.exe` — 测试套件
+- `Scraps.exe` — main program (tray resident, single instance)
+- `scraps-cli.exe` — command line tool (`--help` for usage)
+- `scraps_tests.exe` — test suite
 
-## 文档
+## Docs
 
-- [架构总览](docs/ARCHITECTURE.md)
-- [命令参考](docs/COMMANDS.md)
-- [存储 Schema](docs/SCHEMA.md)
-- [性能说明](docs/PERF.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Commands](docs/COMMANDS.md)
+- [Storage schema](docs/SCHEMA.md)
+- [Performance notes](docs/PERF.md)
 
-## 常见问题
+## License
 
-**Scraps 和 Ditto / PowerToys 剪贴板有什么区别？**
-Scraps 是纯原生 Win32 + Direct2D 直绘实现，没有运行时依赖、没有 Electron；虚拟化列表基于 Fenwick 索引支持可变行高，十万级条目下滚动依然瞬时。相比 PowerToys 剪贴板提供更完整的历史管理能力（标签 / 分组 / 队列 / 库分层）与 CLI 脚本化接口。
+Released under the [GPL-3.0](LICENSE).
 
-**我的数据存在哪里？会被上传吗？**
-全部存储在本地 `%LOCALAPPDATA%\Scraps`（SQLite + FTS5）。无任何网络上传、无遥测、无账号。
-
-**支持哪些系统？**
-Windows 10 / 11（x64）。
-
-**历史记录会无限膨胀吗？**
-`history / library` 分层存储 + 清理策略，常用内容进收藏与标签体系，其余按策略清理。
-
-## 许可
-
-本项目以 [GPL-3.0](LICENSE) 发布。
-
-第三方组件（nlohmann/json、qrencode、SQLite 头、yoga）随附于
-[third_party/](third_party/NOTICES.md)，按其自身许可分发。
+Third-party components (nlohmann/json, qrcodegen, SQLite headers, yoga) ship under
+[third_party/](third_party/NOTICES.md) with their own licenses.
