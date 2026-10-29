@@ -1,4 +1,5 @@
 #include "core/commands/AppController.Internal.h"
+#include "core/clipboard/ImagePng.h"
 #include "core/policies/ImageIngestPolicy.h"
 
 namespace clipd2d::core::commands {
@@ -29,7 +30,18 @@ void AppController::IngestWorkerLoop() {
       std::scoped_lock lock(mutex_);
       if (!shutting_down_) {
         if (status.ok()) {
-          const std::wstring preview_path = policies::ResolvePreviewPath(clip.storage_path, clip.is_large_image);
+          // 大图落盘缩略预览（1024 封顶）：原图解码可达数百毫秒，悬停预览与
+          // OCR 都优先吃这份缩小版。生成失败保持空路径，读路径回退原图。
+          std::wstring preview_path;
+          if (clip.is_large_image) {
+            const std::wstring derived = policies::DeriveLargeImagePreviewPath(clip.storage_path);
+            if (!derived.empty() &&
+                clipboard::SaveScaledImageFileToPng(clip.storage_path, derived, 1024, 1024).ok()) {
+              preview_path = derived;
+            }
+          } else {
+            preview_path = policies::ResolvePreviewPath(clip.storage_path, false);
+          }
           status = repository_.FinalizePendingImageClip(
               clip_id,
               content_hash,

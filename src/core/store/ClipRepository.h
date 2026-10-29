@@ -88,6 +88,11 @@ class ClipRepository {
       const std::string& ocr_engine,
       const std::string& ocr_language);
   common::Status MarkImageOcrFailed(std::int64_t id, const std::string& error_message);
+  // 大图缩略预览自愈：OCR worker 懒生成 preview 后回写路径（供悬停预览与
+  // 后续 OCR 复用，避免每次全量解码原图）。
+  common::Status SetLargeImagePreviewPath(std::int64_t id, const std::wstring& preview_path);
+  // 列出缺失缩略预览的大图（id + 原图路径），供启动自愈批量补生成。
+  std::vector<std::pair<std::int64_t, std::wstring>> ListLargeImagesMissingPreview();
   common::Status PromoteFileClipToSnapshot(std::int64_t id);
   common::Status SetPinned(std::int64_t id, bool pinned);
   common::Status SetFavorite(std::int64_t id, bool favorite);

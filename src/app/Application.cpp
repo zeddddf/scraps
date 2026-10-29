@@ -246,11 +246,19 @@ int Application::Run() {
     if (dispatch_elapsed_us >= kSlowMessageThresholdUs) {
       char message_hex[16]{};
       std::snprintf(message_hex, sizeof(message_hex), "0x%04X", message.message);
+      char detail[32]{};
+      // WM_TIMER 记 timer id（wParam），其余记 wParam——区分主面板多个
+      // 定时器（帧泵/悬停预览/修剪）里谁在吃时间。
+      if (message.message == WM_TIMER) {
+        std::snprintf(detail, sizeof(detail), " timer_id=%zu",
+                      static_cast<size_t>(message.wParam));
+      }
       common::WriteLog(
           common::LogLevel::Warning,
           "ui.message.slow",
           std::string("msg=") + message_hex +
               " hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(message.hwnd)) +
+              detail +
               " elapsed_ms=" + common::FormatMs(dispatch_elapsed_us));
     }
   }

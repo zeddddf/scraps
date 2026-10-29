@@ -27,4 +27,14 @@ std::wstring ResolvePreviewPath(const std::wstring& storage_path, bool is_large_
   return is_large_image ? std::wstring{} : storage_path;
 }
 
+std::wstring DeriveLargeImagePreviewPath(const std::wstring& storage_path) {
+  if (storage_path.empty()) {
+    return std::wstring{};
+  }
+  const std::size_t slash = storage_path.find_last_of(L"/\\");
+  const std::wstring dir = slash == std::wstring::npos ? std::wstring{} : storage_path.substr(0, slash + 1);
+  const std::wstring name = slash == std::wstring::npos ? storage_path : storage_path.substr(slash + 1);
+  return dir + L"preview_" + name;
+}
+
 }  // namespace clipd2d::core::policies

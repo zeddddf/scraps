@@ -210,6 +210,15 @@ class PreviewWindow {
     bool valid = false;
   };
   mutable TextMeasureCache text_measure_cache_;
+  // OCR 文本测量缓存（key=clip_id+wrap 宽）：RenderFrame 每帧都要 OCR 区
+  // 高度，5779 字符全文 shaping 实测 59-74ms/帧——缓存后同宽度零成本。
+  struct OcrMeasureCache {
+    std::int64_t clip_id = -1;
+    float wrap_width = 0.0f;
+    float ocr_height = 0.0f;
+    bool valid = false;
+  };
+  mutable OcrMeasureCache ocr_measure_cache_;
 
   // Files 清单与滚轮。
   void ReloadFilesModel();

@@ -1580,6 +1580,27 @@ SIZE PreviewWindow::ComputePreferredSize(bool compact) const {
 }
 
 void PreviewWindow::RenderFrame() {
+  // 分段计时：悬停弹出的"先绘后显"首帧在本函数同步完成，慢了直接卡住
+  // ShowHoverPreviewForRow 定时器消息（实测出现过 204ms）。RAII 探针覆盖
+  // 全部 return 路径，超 8ms 才记日志（否则悬停刷屏）。
+  struct RenderProbe {
+    common::Stopwatch stopwatch;
+    std::int64_t clip_id;
+    std::int64_t ocr_measure_us = 0;
+    std::int64_t ocr_draw_us = 0;
+    ~RenderProbe() {
+      const std::int64_t elapsed_us = stopwatch.ElapsedUs();
+      if (elapsed_us >= 8000) {
+        common::WriteLog(
+            common::LogLevel::Warning,
+            "preview.render",
+            "slow clip_id=" + std::to_string(clip_id) +
+                " total_ms=" + common::FormatMs(elapsed_us) +
+                " ocr_measure_ms=" + common::FormatMs(ocr_measure_us) +
+                " ocr_draw_ms=" + common::FormatMs(ocr_draw_us));
+      }
+    }
+  } render_probe{common::Stopwatch{}, clip_.has_value() ? clip_->summary.id : -1};
   // C1 暗色模式：主题纪元变化时重建刷子并刷新 DWM 暗色属性与 rich-edit 配色。
   if (d2d_shell_.SyncTheme()) {
     ApplyDarkModeAttribute(hwnd_, clipd2d::ui::IsDarkThemeActive());
@@ -1690,15 +1711,32 @@ void PreviewWindow::RenderFrame() {
 
   if (is_image) {
     // OCR 文本区（D2D 绘制，替代原 RichEdit 子控件）。
-    const std::wstring ocr_text = OcrDisplayText();
+    // 显示区高 140px（约 6 行）；超长 OCR 文本（实测 5779 字符）全文 shaping
+    // 每帧要 100ms+（measure 59-74ms + draw 32-43ms）。按可见上限截断——
+    // 超出部分本来就被 clip，显示无差异。
+    constexpr size_t kOcrDisplayMaxChars = 800;
+    std::wstring ocr_text = OcrDisplayText();
+    if (ocr_text.size() > kOcrDisplayMaxChars) {
+      ocr_text.resize(kOcrDisplayMaxChars);
+      ocr_text += L" …";
+    }
     float ocr_height = 0.0f;
     if (!ocr_text.empty()) {
-      float longest = 0.0f;
-      float wrapped = 0.0f;
-      // 测量宽度与下方 ocr_rect 实际渲染宽度一致（kPad..content_right）。
-      MeasureTextExtent(
-          ocr_text, d2d_shell_.body_format(), content_right - kPad, &longest, &wrapped);
-      ocr_height = std::min(wrapped, 140.0f);
+      const float wrap_width = content_right - kPad;
+      if (ocr_measure_cache_.valid && ocr_measure_cache_.clip_id == clip_->summary.id &&
+          std::fabs(ocr_measure_cache_.wrap_width - wrap_width) < 0.5f) {
+        ocr_height = ocr_measure_cache_.ocr_height;
+      } else {
+        float longest = 0.0f;
+        float wrapped = 0.0f;
+        // 测量宽度与下方 ocr_rect 实际渲染宽度一致（kPad..content_right）。
+        common::Stopwatch ocr_measure_sw;
+        MeasureTextExtent(
+            ocr_text, d2d_shell_.body_format(), wrap_width, &longest, &wrapped);
+        render_probe.ocr_measure_us = ocr_measure_sw.ElapsedUs();
+        ocr_height = std::min(wrapped, 140.0f);
+        ocr_measure_cache_ = {clip_->summary.id, wrap_width, ocr_height, true};
+      }
     }
     // 排版网格：标题 14 / meta 42 / tab 36 / 分隔线 68 / 操作行 76..104 / 图片起 114。
     // 图片区左右贴边（kImageEdgePad=8，与 ComputePreferredSize 同一套常量）。
@@ -1720,6 +1758,7 @@ void PreviewWindow::RenderFrame() {
     if (ocr_height > 0.0f && !ocr_text.empty()) {
       const D2D1_RECT_F ocr_rect = D2D1::RectF(
           kPad, image_rect.bottom + 10.0f, content_right, image_rect.bottom + 10.0f + ocr_height);
+      common::Stopwatch ocr_draw_sw;
       target->DrawTextW(
           ocr_text.c_str(),
           static_cast<UINT32>(ocr_text.size()),
@@ -1727,6 +1766,7 @@ void PreviewWindow::RenderFrame() {
           ocr_rect,
           d2d_shell_.muted_text_brush(),
           D2D1_DRAW_TEXT_OPTIONS_CLIP);
+      render_probe.ocr_draw_us = ocr_draw_sw.ElapsedUs();
     }
     d2d_shell_.EndFrame();
     return;

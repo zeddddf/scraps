@@ -169,6 +169,35 @@ common::Status ClipRepository::MarkImageOcrFailed(std::int64_t id, const std::st
   return common::Status::Ok();
 }
 
+common::Status ClipRepository::SetLargeImagePreviewPath(std::int64_t id, const std::wstring& preview_path) {
+  Statement statement(db_, "UPDATE clips SET preview_path = ?1 WHERE id = ?2");
+  BindWide(statement.get(), 1, preview_path);
+  sqlite3_bind_int64(statement.get(), 2, id);
+  if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+    return SqliteError(db_, "Set large image preview path failed");
+  }
+  return common::Status::Ok();
+}
+
+std::vector<std::pair<std::int64_t, std::wstring>> ClipRepository::ListLargeImagesMissingPreview() {
+  Statement statement(
+      db_,
+      "SELECT id, storage_path FROM clips "
+      "WHERE is_large_image = 1 AND content_type = 'image' "
+      "AND (preview_path IS NULL OR preview_path = '') AND storage_path != ''");
+  std::vector<std::pair<std::int64_t, std::wstring>> result;
+  for (;;) {
+    const int rc = sqlite3_step(statement.get());
+    if (rc != SQLITE_ROW) {
+      break;
+    }
+    result.emplace_back(
+        sqlite3_column_int64(statement.get(), 0),
+        ToWideOrEmpty(ColumnString(statement.get(), 1).c_str()));
+  }
+  return result;
+}
+
 common::Status ClipRepository::PromoteFileClipToSnapshot(std::int64_t id) {
   ClipRecord clip;
   common::Status status = GetClipDetailsById(id, &clip);
